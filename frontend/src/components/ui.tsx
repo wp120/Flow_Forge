@@ -34,18 +34,21 @@ export function Button({
   icon: Icon,
   type = "button",
   onClick,
+  disabled = false,
 }: {
   children: ReactNode;
   variant?: string;
   icon?: Icon;
   type?: "button" | "submit";
   onClick?: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type={type}
       onClick={onClick}
       className={`button button-${variant}`}
+      disabled={disabled}
     >
       {Icon && <Icon size={16} />}
       {children}

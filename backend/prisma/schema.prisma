@@ -6,3 +6,275 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum FormStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum FormVersionStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum WorkflowStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SubmissionStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+enum NotificationDeliveryChannel {
+  EMAIL
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Company {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdBy String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  creator       User?          @relation("CompanyCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  users         User[]         @relation("CompanyUsers")
+  forms         Form[]
+  workflows     Workflow[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@map("companies")
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  name         String
+  email        String     @unique
+  passwordHash String
+  status       UserStatus @default(ACTIVE)
+  role         UserRole   @default(USER)
+  companyId    String     @db.Uuid
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  company                Company          @relation("CompanyUsers", fields: [companyId], references: [id], onDelete: Cascade)
+  createdCompanies       Company[]        @relation("CompanyCreator")
+  createdForms           Form[]           @relation("FormCreator")
+  createdFormVersions    FormVersion[]    @relation("FormVersionCreator")
+  updatedFormVersions    FormVersion[]    @relation("FormVersionUpdater")
+  createdWorkflows       Workflow[]       @relation("WorkflowCreator")
+  submittedSubmissions   Submission[]     @relation("SubmissionSubmittedBy")
+  updatedSubmissions     Submission[]     @relation("SubmissionUpdatedBy")
+  actedOnSubmissionSteps SubmissionStep[] @relation("SubmissionStepActor")
+  notifications          Notification[]   @relation("NotificationUser")
+  auditLogs              AuditLog[]       @relation("AuditActor")
+
+  @@map("users")
+}
+
+model Form {
+  id          String     @id @default(uuid()) @db.Uuid
+  companyId   String     @db.Uuid
+  createdBy   String     @db.Uuid
+  name        String
+  description String?
+  status      FormStatus @default(DRAFT)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  company  Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creator  User          @relation("FormCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  versions FormVersion[]
+
+  @@map("forms")
+}
+
+model FormVersion {
+  id            String            @id @default(uuid()) @db.Uuid
+  formId        String            @db.Uuid
+  versionNumber Int
+  schemaJson    Json
+  workflowId    String            @db.Uuid
+  status        FormVersionStatus @default(DRAFT)
+  createdBy     String            @db.Uuid
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  updatedBy     String?           @db.Uuid
+
+  form        Form         @relation(fields: [formId], references: [id], onDelete: Cascade)
+  workflow    Workflow     @relation(fields: [workflowId], references: [id], onDelete: Restrict)
+  creator     User         @relation("FormVersionCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  updater     User?        @relation("FormVersionUpdater", fields: [updatedBy], references: [id], onDelete: SetNull)
+  submissions Submission[]
+
+  @@unique([formId, versionNumber])
+  @@map("form_versions")
+}
+
+model Workflow {
+  id        String         @id @default(uuid()) @db.Uuid
+  companyId String         @db.Uuid
+  name      String
+  createdBy String         @db.Uuid
+  createdAt DateTime       @default(now())
+  status    WorkflowStatus @default(ACTIVE)
+
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creator      User           @relation("WorkflowCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  steps        WorkflowStep[]
+  formVersions FormVersion[]
+
+  @@map("workflows")
+}
+
+model WorkflowStep {
+  id           String @id @default(uuid()) @db.Uuid
+  workflowId   String @db.Uuid
+  stepOrder    Int
+  name         String
+  approvalJson Json?
+  nextStepJson Json?
+
+  workflow           Workflow         @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  currentSubmissions Submission[]     @relation("CurrentSubmissionStep")
+  submissionSteps    SubmissionStep[]
+
+  @@unique([workflowId, stepOrder])
+  @@map("workflow_steps")
+}
+
+model Submission {
+  id               String           @id @default(uuid()) @db.Uuid
+  formVersionId    String           @db.Uuid
+  submittedBy      String           @db.Uuid
+  dataJson         Json
+  status           SubmissionStatus @default(PENDING)
+  currentStepId    String?          @db.Uuid
+  resubmissionOfId String?          @db.Uuid
+  submittedAt      DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  updatedBy        String?          @db.Uuid
+
+  formVersion        FormVersion      @relation(fields: [formVersionId], references: [id], onDelete: Restrict)
+  submitter          User             @relation("SubmissionSubmittedBy", fields: [submittedBy], references: [id], onDelete: Restrict)
+  updater            User?            @relation("SubmissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  currentStep        WorkflowStep?    @relation("CurrentSubmissionStep", fields: [currentStepId], references: [id], onDelete: SetNull)
+  originalSubmission Submission?      @relation("SubmissionResubmission", fields: [resubmissionOfId], references: [id], onDelete: SetNull)
+  resubmissions      Submission[]     @relation("SubmissionResubmission")
+  files              SubmissionFile[]
+  steps              SubmissionStep[]
+
+  @@map("submissions")
+}
+
+model SubmissionFile {
+  id               String @id @default(uuid()) @db.Uuid
+  submissionId     String @db.Uuid
+  fieldKey         String
+  storagePath      String
+  originalFilename String
+  mimeType         String
+  sizeBytes        Int
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@map("submission_files")
+}
+
+model SubmissionStep {
+  id             String               @id @default(uuid()) @db.Uuid
+  submissionId   String               @db.Uuid
+  workflowStepId String               @db.Uuid
+  status         SubmissionStepStatus @default(PENDING)
+  comment        String?
+  actedBy        String?              @db.Uuid
+  actedAt        DateTime?
+
+  submission   Submission   @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  workflowStep WorkflowStep @relation(fields: [workflowStepId], references: [id], onDelete: Restrict)
+  actor        User?        @relation("SubmissionStepActor", fields: [actedBy], references: [id], onDelete: SetNull)
+
+  @@unique([submissionId, workflowStepId])
+  @@map("submission_steps")
+}
+
+model Notification {
+  id                String    @id @default(uuid()) @db.Uuid
+  companyId         String    @db.Uuid
+  userId            String    @db.Uuid
+  type              String
+  title             String
+  message           String
+  relatedEntityType String?
+  relatedEntityId   String?
+  isRead            Boolean   @default(false)
+  readAt            DateTime?
+  createdAt         DateTime  @default(now())
+
+  company    Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user       User                   @relation("NotificationUser", fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id                String                      @id @default(uuid()) @db.Uuid
+  notificationId    String                      @db.Uuid
+  channel           NotificationDeliveryChannel
+  status            NotificationDeliveryStatus  @default(PENDING)
+  attemptCount      Int                         @default(0)
+  providerMessageId String?
+  lastError         String?
+  sentAt            DateTime?
+  createdAt         DateTime                    @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@map("notification_deliveries")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @db.Uuid
+  actorUserId   String?  @db.Uuid
+  action        String
+  entityType    String
+  entityId      String?
+  correlationId String?
+  detailsJson   Json?
+  createdAt     DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  actor   User?   @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}

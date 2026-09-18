@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Bell, ChevronRight, LogOut, Menu, Settings, X } from "lucide-react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Logo } from "./AuthLayout";
-import type { Icon, Role } from "../types/workflow";
+import type { Icon } from "../types/workflow";
 import {
   LayoutDashboard,
   FileText,
@@ -11,23 +11,32 @@ import {
   GitBranch,
   Users,
 } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
 
-const navItems: { label: string; to: string; icon: Icon; roles?: Role[] }[] = [
+const navItems: { label: string; to: string; icon: Icon; roles?: ("ADMIN" | "USER")[] }[] = [
   { label: "Overview", to: "/", icon: LayoutDashboard },
   { label: "Forms", to: "/forms", icon: FileText },
   { label: "Requests", to: "/requests", icon: ClipboardList },
   { label: "Approvals", to: "/approvals", icon: ShieldCheck },
-  { label: "Workflows", to: "/workflows", icon: GitBranch, roles: ["admin"] },
-  { label: "Users", to: "/users", icon: Users, roles: ["admin"] },
+  { label: "Workflows", to: "/workflows", icon: GitBranch, roles: ["ADMIN"] },
+  { label: "Users", to: "/users", icon: Users, roles: ["ADMIN"] },
 ];
 
 export function AppShell() {
-  const [role, setRole] = useState<Role>("admin");
+  const { currentUser, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const role = currentUser?.role ?? "USER";
   const items = navItems.filter(
     (item) => !item.roles || item.roles.includes(role),
   );
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login");
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
@@ -43,8 +52,8 @@ export function AppShell() {
         <div className="workspace-switch">
           <span className="workspace-avatar">N</span>
           <div>
-            <strong>Northstar Studio</strong>
-            <small>Acme organization</small>
+            <strong>{currentUser?.companyId ? "Company workspace" : "FlowForge"}</strong>
+            <small>{currentUser?.email ?? "Authenticated user"}</small>
           </div>
           <ChevronRight size={15} />
         </div>
@@ -104,32 +113,24 @@ export function AppShell() {
               <span className="notification-dot" />
             </Link>
             <div className="profile">
-              <span className="avatar">AM</span>
+              <span className="avatar">{currentUser?.name.slice(0, 2).toUpperCase() ?? "US"}</span>
               <div>
-                <strong>Alex Morgan</strong>
+                <strong>{currentUser?.name ?? "User"}</strong>
                 <small>
-                  {role === "admin" ? "Administrator" : "Team member"}
+                  {role === "ADMIN" ? "Administrator" : "Team member"}
                 </small>
               </div>
-              <select
-                aria-label="Preview role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as Role)}
-              >
-                <option value="admin">Admin view</option>
-                <option value="member">Member view</option>
-              </select>
             </div>
-            <Link to="/login" className="logout" title="Log out">
+            <button type="button" onClick={handleLogout} className="logout" title="Log out">
               <LogOut size={17} />
-            </Link>
+            </button>
           </div>
         </header>
         <main className="main-content">
           <Outlet />
         </main>
         <footer>
-          FlowForge <span>·</span> Northstar Studio <span>·</span>{" "}
+          FlowForge <span>·</span> {currentUser?.name ?? "Workspace"} <span>·</span>{" "}
           <Link to="/settings">Workspace settings</Link>
         </footer>
       </div>
