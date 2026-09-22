@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Bell, ChevronRight, LogOut, Menu, Settings, X } from "lucide-react";
-import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import {
+  Link,
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { Logo } from "./AuthLayout";
 import type { Icon } from "../types/workflow";
 import {
@@ -13,7 +19,12 @@ import {
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
-const navItems: { label: string; to: string; icon: Icon; roles?: ("ADMIN" | "USER")[] }[] = [
+const navItems: {
+  label: string;
+  to: string;
+  icon: Icon;
+  roles?: ("ADMIN" | "USER")[];
+}[] = [
   { label: "Overview", to: "/", icon: LayoutDashboard },
   { label: "Forms", to: "/forms", icon: FileText },
   { label: "Requests", to: "/requests", icon: ClipboardList },
@@ -52,7 +63,9 @@ export function AppShell() {
         <div className="workspace-switch">
           <span className="workspace-avatar">N</span>
           <div>
-            <strong>{currentUser?.companyId ? "Company workspace" : "FlowForge"}</strong>
+            <strong>
+              {currentUser?.companyId ? "Company workspace" : "FlowForge"}
+            </strong>
             <small>{currentUser?.email ?? "Authenticated user"}</small>
           </div>
           <ChevronRight size={15} />
@@ -113,7 +126,9 @@ export function AppShell() {
               <span className="notification-dot" />
             </Link>
             <div className="profile">
-              <span className="avatar">{currentUser?.name.slice(0, 2).toUpperCase() ?? "US"}</span>
+              <span className="avatar">
+                {currentUser?.name.slice(0, 2).toUpperCase() ?? "US"}
+              </span>
               <div>
                 <strong>{currentUser?.name ?? "User"}</strong>
                 <small>
@@ -121,7 +136,12 @@ export function AppShell() {
                 </small>
               </div>
             </div>
-            <button type="button" onClick={handleLogout} className="logout" title="Log out">
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="logout"
+              title="Log out"
+            >
               <LogOut size={17} />
             </button>
           </div>
@@ -130,8 +150,8 @@ export function AppShell() {
           <Outlet />
         </main>
         <footer>
-          FlowForge <span>·</span> {currentUser?.name ?? "Workspace"} <span>·</span>{" "}
-          <Link to="/settings">Workspace settings</Link>
+          FlowForge <span>·</span> {currentUser?.name ?? "Workspace"}{" "}
+          <span>·</span> <Link to="/settings">Workspace settings</Link>
         </footer>
       </div>
     </div>

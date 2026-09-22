@@ -65,7 +65,8 @@ export function Login() {
           </Button>
         </form>
         <div className="auth-switch">
-          New to FlowForge? <Link to="/register">Register your organization</Link>
+          New to FlowForge?{" "}
+          <Link to="/register">Register your organization</Link>
         </div>
       </div>
     </AuthLayout>
@@ -91,7 +92,11 @@ export function Register() {
       await register({ companyName, name, email, password });
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create your organization.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to create your organization.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -145,7 +150,8 @@ export function Register() {
           </Field>
           {error && <div className="error-banner">{error}</div>}
           <Button type="submit" disabled={submitting}>
-            {submitting ? "Creating organization…" : "Create organization"} <ChevronRight size={16} />
+            {submitting ? "Creating organization…" : "Create organization"}{" "}
+            <ChevronRight size={16} />
           </Button>
         </form>
       </div>

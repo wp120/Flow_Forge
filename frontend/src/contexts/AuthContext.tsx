@@ -26,10 +26,7 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-async function apiFetch<T>(
-  input: string,
-  init?: RequestInit,
-): Promise<T> {
+async function apiFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`http://localhost:3001${input}`, {
     credentials: "include",
     ...init,
