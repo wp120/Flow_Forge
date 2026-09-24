@@ -5,6 +5,7 @@ export type CurrentUser = {
   companyId: string;
   role: "ADMIN" | "USER";
   status: "ACTIVE" | "INACTIVE";
+  department: string | null;
 };
 
 export type AuthResponse = {

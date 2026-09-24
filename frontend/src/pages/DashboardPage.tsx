@@ -4,17 +4,38 @@ import {
   Plus,
   SlidersHorizontal,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { requests } from "../data/mockData";
 import { RequestTable } from "../components/RequestTable";
 import { Button, PageHeader } from "../components/ui";
+import { useAuth } from "../contexts/AuthContext";
+import { apiFetch } from "../lib/api";
+import type { RequestSummary } from "../types/workflow";
 
 export function Dashboard() {
+  const { currentUser } = useAuth();
+  const [requests, setRequests] = useState<RequestSummary[]>([]);
+
+  useEffect(() => {
+    async function loadRequests() {
+      try {
+        const data = await apiFetch<{ requests: RequestSummary[] }>(
+          "/api/requests",
+        );
+        setRequests(data.requests.slice(0, 3));
+      } catch {
+        setRequests([]);
+      }
+    }
+
+    loadRequests();
+  }, []);
+
   return (
     <>
       <PageHeader
         eyebrow="MONDAY, SEPTEMBER 16, 2026"
-        title="Good morning, Alex"
+        title={`Good morning, ${currentUser?.name}`}
         description="Here’s what is moving through Northstar Studio today."
         action={<Button icon={Plus}>New request</Button>}
       />
@@ -51,7 +72,7 @@ export function Dashboard() {
               View all <ChevronRight size={15} />
             </Link>
           </div>
-          <RequestTable rows={requests.slice(0, 3)} />
+          <RequestTable rows={requests} />
         </section>
         <section className="panel">
           <div className="panel-heading">

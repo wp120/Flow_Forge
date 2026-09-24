@@ -1,10 +1,9 @@
 import { ChevronRight } from "lucide-react";
 import { Link } from "react-router-dom";
-import { requests } from "../data/mockData";
 import type { RequestSummary } from "../types/workflow";
 import { StatusBadge } from "./ui";
 
-export function RequestTable({ rows = requests }: { rows?: RequestSummary[] }) {
+export function RequestTable({ rows = [] }: { rows?: RequestSummary[] }) {
   return (
     <div className="table-wrap">
       <table>
@@ -19,7 +18,11 @@ export function RequestTable({ rows = requests }: { rows?: RequestSummary[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((request) => (
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={6}>No requests found.</td>
+            </tr>
+          ) : rows.map((request) => (
             <tr key={request.id}>
               <td>
                 <Link to={`/requests/${request.id}`} className="table-primary">

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { apiFetch } from "../lib/api";
 import type { CurrentUser } from "../types/auth";
 
 type AuthContextValue = {
@@ -25,25 +26,6 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
-async function apiFetch<T>(input: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`http://localhost:3001${input}`, {
-    credentials: "include",
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.message ?? "Request failed.");
-  }
-
-  return data as T;
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);

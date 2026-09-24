@@ -1,20 +1,70 @@
 import { Bell, MoreHorizontal, UserPlus } from "lucide-react";
-import { notifications } from "../data/mockData";
+import { useEffect, useState } from "react";
 import { Button, Field, PageHeader, StatusBadge } from "../components/ui";
+import { apiFetch } from "../lib/api";
+
+type AdminUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: "ADMIN" | "USER";
+  status: "ACTIVE" | "INACTIVE";
+  department: string | null;
+  createdAt: string;
+};
 
 export function UsersPage() {
-  const users = [
-    ["Alex Morgan", "alex@northstar.studio", "Admin", "Active", "Now"],
-    ["Jordan Lee", "jordan@northstar.studio", "Member", "Active", "Today"],
-    [
-      "Priya Shah",
-      "priya@northstar.studio",
-      "Member · Approver",
-      "Active",
-      "Yesterday",
-    ],
-    ["Marcus Chen", "marcus@northstar.studio", "Member", "Invited", "Never"],
-  ];
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "USER" as "ADMIN" | "USER",
+    department: "",
+  });
+
+  async function loadUsers() {
+    try {
+      const data = await apiFetch<{ users: AdminUser[] }>("/api/admin/users");
+      setUsers(data.users);
+    } catch {
+      setUsers([]);
+    }
+  }
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  async function handleCreateUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFormError("");
+    setSaving(true);
+
+    try {
+      await apiFetch<{ user: AdminUser }>("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify(form),
+      });
+      setForm({
+        name: "",
+        email: "",
+        password: "",
+        role: "USER",
+        department: "",
+      });
+      await loadUsers();
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : "Unable to add user.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -24,41 +74,102 @@ export function UsersPage() {
         action={<Button icon={UserPlus}>Add user</Button>}
       />
       <section className="panel">
+        <form
+          onSubmit={handleCreateUser}
+          className="settings-form"
+          style={{ marginBottom: 24 }}
+        >
+          <h2>Add user</h2>
+          <div className="form-grid">
+            <Field label="Name">
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Jordan Lee"
+                required
+              />
+            </Field>
+            <Field label="Email">
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                placeholder="jordan@company.com"
+                required
+              />
+            </Field>
+            <Field label="Department">
+              <input
+                value={form.department}
+                onChange={(e) =>
+                  setForm({ ...form, department: e.target.value })
+                }
+                placeholder="Finance"
+              />
+            </Field>
+            <Field label="Role">
+              <select
+                value={form.role}
+                onChange={(e) =>
+                  setForm({ ...form, role: e.target.value as "ADMIN" | "USER" })
+                }
+              >
+                <option value="USER">Member</option>
+                <option value="ADMIN">Admin</option>
+              </select>
+            </Field>
+            <Field label="Temporary password">
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                placeholder="At least 8 characters"
+                required
+              />
+            </Field>
+          </div>
+          {formError && <div className="error-banner">{formError}</div>}
+          <Button type="submit" disabled={saving}>
+            {saving ? "Adding user…" : "Add user"}
+          </Button>
+        </form>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>User</th>
                 <th>Role</th>
+                <th>Department</th>
                 <th>Status</th>
-                <th>Last active</th>
+                <th>Created</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {users.map(([name, email, role, status, last]) => (
-                <tr key={email}>
+              {users.map((user) => (
+                <tr key={user.id}>
                   <td>
                     <div className="user-cell">
                       <span className="avatar">
-                        {name
+                        {user.name
                           .split(" ")
                           .map((part) => part[0])
                           .join("")}
                       </span>
                       <div>
-                        <strong>{name}</strong>
-                        <small>{email}</small>
+                        <strong>{user.name}</strong>
+                        <small>{user.email}</small>
                       </div>
                     </div>
                   </td>
-                  <td>{role}</td>
+                  <td>{user.role}</td>
+                  <td>{user.department ?? "—"}</td>
                   <td>
-                    <StatusBadge status={status} />
+                    <StatusBadge status={user.status} />
                   </td>
-                  <td>{last}</td>
+                  <td>{new Date(user.createdAt).toLocaleDateString()}</td>
                   <td>
-                    <button className="icon-button">
+                    <button className="icon-button" type="button">
                       <MoreHorizontal size={17} />
                     </button>
                   </td>
@@ -73,6 +184,21 @@ export function UsersPage() {
 }
 
 export function Notifications() {
+  const notifications = [
+    {
+      title: "Approval needed",
+      body: "A new request is waiting for your decision.",
+      time: "Just now",
+      unread: true,
+    },
+    {
+      title: "Workflow update",
+      body: "A workflow was updated for this workspace.",
+      time: "Yesterday",
+      unread: false,
+    },
+  ];
+
   return (
     <>
       <PageHeader

@@ -1,10 +1,36 @@
-import { useState } from "react";
-import { Check, ChevronRight, MoreHorizontal, Plus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronRight, MoreHorizontal, Plus } from "lucide-react";
 import { Link } from "react-router-dom";
-import { workflows } from "../data/mockData";
 import { Button, Field, PageHeader, StatusBadge } from "../components/ui";
+import { apiFetch } from "../lib/api";
+
+type WorkflowStepDraft = {
+  name: string;
+  approverType: string;
+  approverValue: string;
+};
+
+type WorkflowOptions = {
+  users: { id: string; name: string; email: string }[];
+  departments: string[];
+  roles: string[];
+};
 
 export function Workflows() {
+  const [workflows, setWorkflows] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function loadWorkflows() {
+      try {
+        const data = await apiFetch<{ workflows: any[] }>("/api/workflows");
+        setWorkflows(data.workflows);
+      } catch {
+        setWorkflows([]);
+      }
+    }
+
+    loadWorkflows();
+  }, []);
   return (
     <>
       <PageHeader
@@ -67,7 +93,55 @@ export function Workflows() {
 }
 
 export function WorkflowEditor() {
-  const [steps, setSteps] = useState(["Team manager", "Finance partner"]);
+  const [name, setName] = useState("New approval workflow");
+  const [description, setDescription] = useState("Route submitted requests through the appropriate reviewers.");
+  const [steps, setSteps] = useState<WorkflowStepDraft[]>([
+    { name: "Team manager", approverType: "ROLE", approverValue: "ADMIN" },
+    { name: "Finance partner", approverType: "DEPARTMENT", approverValue: "" },
+  ]);
+  const [options, setOptions] = useState<WorkflowOptions>({ users: [], departments: [], roles: [] });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function loadOptions() {
+      try {
+        const data = await apiFetch<WorkflowOptions>("/api/admin/workflow-options");
+        setOptions(data);
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Unable to load approver options.");
+      }
+    }
+
+    loadOptions();
+  }, []);
+
+  function updateStep(index: number, changes: Partial<WorkflowStepDraft>) {
+    setSteps((current) => current.map((step, stepIndex) => stepIndex === index ? { ...step, ...changes } : step));
+  }
+
+  function valuesFor(type: string) {
+    if (type === "USER") return options.users.map((user) => ({ value: user.id, label: `${user.name} · ${user.email}` }));
+    if (type === "DEPARTMENT") return options.departments.map((department) => ({ value: department, label: department }));
+    return options.roles.map((role) => ({ value: role, label: role }));
+  }
+
+  async function saveWorkflow() {
+    setSaving(true);
+    setError("");
+
+    try {
+      await apiFetch("/api/workflows", {
+        method: "POST",
+        body: JSON.stringify({ name, description, steps }),
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Unable to save workflow.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -75,10 +149,7 @@ export function WorkflowEditor() {
         title="Create workflow"
         description="Set the people and sequence that decide a request."
         action={
-          <div className="header-actions">
-            <Button variant="secondary">Save draft</Button>
-            <Button icon={Check}>Publish workflow</Button>
-          </div>
+          <Button onClick={saveWorkflow} disabled={saving}>{saving ? "Saving..." : "Save workflow"}</Button>
         }
       />
       <div className="editor-layout">
@@ -90,21 +161,16 @@ export function WorkflowEditor() {
             </div>
           </div>
           <Field label="Workflow name">
-            <input defaultValue="New approval workflow" />
+            <input value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
           <Field label="Description">
             <textarea
-              defaultValue="Route submitted requests through the appropriate reviewers."
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
               rows={3}
             />
           </Field>
-          <Field label="Form this workflow serves">
-            <select>
-              <option>Expense Reimbursement</option>
-              <option>Leave Request</option>
-              <option>Purchase Request</option>
-            </select>
-          </Field>
+          {error && <div className="error-banner">{error}</div>}
         </section>
         <section className="panel editor-panel">
           <div className="panel-heading">
@@ -115,23 +181,41 @@ export function WorkflowEditor() {
             <Button
               variant="secondary"
               icon={Plus}
-              onClick={() => setSteps([...steps, "New approver"])}
+              onClick={() => setSteps([...steps, { name: `Step ${steps.length + 1}`, approverType: "ROLE", approverValue: options.roles[0] ?? "ADMIN" }])}
             >
               Add step
             </Button>
           </div>
           <div className="step-list">
             {steps.map((step, index) => (
-              <div className="workflow-step" key={`${step}-${index}`}>
+              <div className="workflow-step" key={`${step.name}-${index}`}>
                 <div className="step-index">{index + 1}</div>
                 <div className="step-line" />
                 <div className="step-content">
                   <span className="eyebrow">STEP {index + 1}</span>
-                  <strong>{step}</strong>
-                  <select>
-                    <option>{step}</option>
-                    <option>Alex Morgan · Admin</option>
-                    <option>Finance team</option>
+                  <input
+                    value={step.name}
+                    onChange={(event) => updateStep(index, { name: event.target.value })}
+                    aria-label={`Step ${index + 1} name`}
+                  />
+                  <select
+                    value={step.approverType}
+                    onChange={(event) => {
+                      const nextType = event.target.value;
+                      updateStep(index, { approverType: nextType, approverValue: valuesFor(nextType)[0]?.value ?? "" });
+                    }}
+                  >
+                    <option value="DEPARTMENT">Department</option>
+                    <option value="ROLE">Role</option>
+                    <option value="USER">User</option>
+                  </select>
+                  <select
+                    value={step.approverValue}
+                    onChange={(event) => updateStep(index, { approverValue: event.target.value })}
+                  >
+                    {valuesFor(step.approverType).map((option) => (
+                      <option value={option.value} key={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </div>
                 <button className="icon-button">

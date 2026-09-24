@@ -80,6 +80,7 @@ model User {
   passwordHash String
   status       UserStatus @default(ACTIVE)
   role         UserRole   @default(USER)
+  department   String?
   companyId    String     @db.Uuid
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -139,12 +140,13 @@ model FormVersion {
 }
 
 model Workflow {
-  id        String         @id @default(uuid()) @db.Uuid
-  companyId String         @db.Uuid
-  name      String
-  createdBy String         @db.Uuid
-  createdAt DateTime       @default(now())
-  status    WorkflowStatus @default(ACTIVE)
+  id          String         @id @default(uuid()) @db.Uuid
+  companyId   String         @db.Uuid
+  name        String
+  description String?
+  createdBy   String         @db.Uuid
+  createdAt   DateTime       @default(now())
+  status      WorkflowStatus @default(ACTIVE)
 
   company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   creator      User           @relation("WorkflowCreator", fields: [createdBy], references: [id], onDelete: Restrict)

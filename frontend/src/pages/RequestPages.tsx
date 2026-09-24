@@ -8,13 +8,29 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
-import { requests } from "../data/mockData";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { Progress } from "../components/Progress";
 import { RequestTable } from "../components/RequestTable";
 import { Button, PageHeader, StatusBadge } from "../components/ui";
+import { apiFetch } from "../lib/api";
 
 export function Requests() {
+  const [requests, setRequests] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function loadRequests() {
+      try {
+        const data = await apiFetch<{ requests: any[] }>("/api/requests");
+        setRequests(data.requests);
+      } catch {
+        setRequests([]);
+      }
+    }
+
+    loadRequests();
+  }, []);
+
   return (
     <>
       <PageHeader
@@ -32,20 +48,35 @@ export function Requests() {
         </button>
       </div>
       <section className="panel">
-        <RequestTable />
+        <RequestTable rows={requests} />
       </section>
     </>
   );
 }
 
 export function RequestDetails() {
-  const approval = useLocation().pathname.includes("REQ-1048");
+  const approval = useLocation().pathname.includes("approvals");
+  const { id } = useParams();
+  const [request, setRequest] = useState<any | null>(null);
+
+  useEffect(() => {
+    if (id) {
+      apiFetch<{ request: any }>(`/api/requests/${id}`)
+        .then((data) => setRequest(data.request))
+        .catch(() => setRequest(null));
+    }
+  }, [id]);
+
+  if (!request) {
+    return <PageHeader eyebrow="REQUEST DETAILS" title="Request not found" description="This request may no longer be available." />;
+  }
+
   return (
     <>
       <PageHeader
         eyebrow={approval ? "REVIEW REQUEST" : "REQUEST DETAILS"}
-        title="REQ-1048"
-        description="Expense Reimbursement · submitted Sep 14, 2026"
+        title={request.id}
+        description={`${request.form} · submitted ${new Date(request.date).toLocaleString()}`}
         action={
           approval ? (
             <div className="header-actions">
@@ -55,7 +86,7 @@ export function RequestDetails() {
               <Button icon={Check}>Approve</Button>
             </div>
           ) : (
-            <StatusBadge status="Pending" />
+            <StatusBadge status={request.status} />
           )
         }
       />
@@ -65,33 +96,25 @@ export function RequestDetails() {
             <div className="panel-heading">
               <div>
                 <h2>Submitted request</h2>
-                <p>Information provided by Jordan Lee</p>
+                <p>Information provided by {request.submittedBy}</p>
               </div>
-              <StatusBadge status="Pending" />
+              <StatusBadge status={request.status} />
             </div>
             <div className="detail-fields">
               <div>
                 <small>Requestor</small>
-                <strong>Jordan Lee</strong>
+                <strong>{request.submittedBy}</strong>
               </div>
               <div>
                 <small>Submitted</small>
-                <strong>Sep 14, 2026 at 10:42 AM</strong>
+                <strong>{new Date(request.date).toLocaleString()}</strong>
               </div>
-              <div>
-                <small>Business purpose</small>
-                <strong>Client workshop travel</strong>
-              </div>
-              <div>
-                <small>Amount</small>
-                <strong>$428.50 USD</strong>
-              </div>
-              <div className="detail-wide">
-                <small>Additional notes</small>
-                <strong>
-                  Travel costs for the Northstar client workshop in Chicago.
-                </strong>
-              </div>
+              {Object.entries(request.data ?? {}).map(([key, value]) => (
+                <div key={key}>
+                  <small>{key}</small>
+                  <strong>{String(value)}</strong>
+                </div>
+              ))}
             </div>
           </section>
           <section className="panel">
@@ -102,36 +125,17 @@ export function RequestDetails() {
               </div>
             </div>
             <div className="history">
-              <div>
-                <span className="history-icon success">
-                  <Check size={15} />
-                </span>
-                <div>
-                  <strong>Request submitted</strong>
-                  <p>Jordan Lee submitted this request.</p>
+              {request.steps.map((step: any) => (
+                <div key={step.id}>
+                  <span className={`history-icon ${step.status === "APPROVED" ? "success" : "pending"}`}>
+                    {step.status === "APPROVED" ? <Check size={15} /> : <Bell size={15} />}
+                  </span>
+                  <div>
+                    <strong>{step.name}</strong>
+                    <p>{step.actedBy ? `Acted by ${step.actedBy}` : `Status: ${step.status.toLowerCase()}`}</p>
+                  </div>
                 </div>
-                <small>Sep 14</small>
-              </div>
-              <div>
-                <span className="history-icon success">
-                  <Check size={15} />
-                </span>
-                <div>
-                  <strong>Manager review approved</strong>
-                  <p>Priya Shah approved this request.</p>
-                </div>
-                <small>Sep 15</small>
-              </div>
-              <div>
-                <span className="history-icon pending">
-                  <Bell size={15} />
-                </span>
-                <div>
-                  <strong>Finance review pending</strong>
-                  <p>Awaiting a decision from the finance team.</p>
-                </div>
-                <small>Now</small>
-              </div>
+              ))}
             </div>
           </section>
         </div>
@@ -140,7 +144,7 @@ export function RequestDetails() {
             <div className="panel-heading">
               <div>
                 <h2>Workflow progress</h2>
-                <p>Finance approval · 2 of 3 complete</p>
+                <p>{request.workflow}</p>
               </div>
             </div>
             <Progress approval={approval} />
@@ -153,11 +157,11 @@ export function RequestDetails() {
             </div>
             <div className="metadata">
               <span>Form</span>
-              <strong>Expense Reimbursement</strong>
+              <strong>{request.form}</strong>
               <span>Workflow</span>
-              <strong>Finance approval</strong>
+              <strong>{request.workflow}</strong>
               <span>Current approver</span>
-              <strong>Finance team</strong>
+              <strong>{request.step}</strong>
             </div>
           </section>
         </aside>
@@ -167,6 +171,21 @@ export function RequestDetails() {
 }
 
 export function Approvals() {
+  const [approvals, setApprovals] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function loadApprovals() {
+      try {
+        const data = await apiFetch<{ approvals: any[] }>("/api/approvals");
+        setApprovals(data.approvals);
+      } catch {
+        setApprovals([]);
+      }
+    }
+
+    loadApprovals();
+  }, []);
+
   return (
     <>
       <PageHeader
@@ -184,7 +203,7 @@ export function Approvals() {
         </div>
       </div>
       <div className="approval-list">
-        {requests.slice(0, 2).map((request) => (
+        {approvals.slice(0, 2).map((request) => (
           <Link
             to={`/requests/${request.id}`}
             className="approval-card"
