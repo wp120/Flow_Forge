@@ -9,7 +9,7 @@ import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { AppShell } from "./layouts/AppShell";
 import { Login, Register, ForgotPassword } from "./pages/AuthPages";
 import { Dashboard } from "./pages/DashboardPage";
-import { Forms, FormEditor, FillForm } from "./pages/FormsPages";
+import { Forms, FormEditor, FormSubmissions, FillForm } from "./pages/FormsPages";
 import { Workflows, WorkflowEditor } from "./pages/WorkflowPages";
 import { Requests, RequestDetails, Approvals } from "./pages/RequestPages";
 import {
@@ -46,6 +46,26 @@ function PublicOnlyRoute() {
   return <Outlet />;
 }
 
+function HomeRoute() {
+  const { currentUser } = useAuth();
+  return currentUser?.role === "ADMIN" ? <Dashboard /> : <Navigate to="/forms" replace />;
+}
+
+function AdminOnlyRoute() {
+  const { currentUser } = useAuth();
+  return currentUser?.role === "ADMIN" ? <Outlet /> : <Navigate to="/forms" replace />;
+}
+
+function RegularUserRoute() {
+  const { currentUser } = useAuth();
+  return currentUser?.role === "USER" ? <Outlet /> : <Navigate to="/forms" replace />;
+}
+
+function FormRoute() {
+  const { currentUser } = useAuth();
+  return currentUser?.role === "ADMIN" ? <FormEditor /> : <FormSubmissions />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -57,17 +77,21 @@ function AppRoutes() {
 
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<HomeRoute />} />
           <Route path="/forms" element={<Forms />} />
-          <Route path="/forms/new" element={<FormEditor />} />
-          <Route path="/forms/:id/fill" element={<FillForm />} />
-          <Route path="/forms/:id" element={<FormEditor />} />
-          <Route path="/workflows" element={<Workflows />} />
-          <Route path="/workflows/new" element={<WorkflowEditor />} />
-          <Route path="/workflows/:id" element={<WorkflowEditor />} />
+          <Route element={<AdminOnlyRoute />}>
+            <Route path="/forms/new" element={<FormEditor />} />
+            <Route path="/workflows" element={<Workflows />} />
+            <Route path="/workflows/new" element={<WorkflowEditor />} />
+            <Route path="/workflows/:id" element={<WorkflowEditor />} />
+            <Route path="/users" element={<UsersPage />} />
+          </Route>
+          <Route element={<RegularUserRoute />}>
+            <Route path="/forms/:id/fill" element={<FillForm />} />
+          </Route>
+          <Route path="/forms/:id" element={<FormRoute />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/requests/:id" element={<RequestDetails />} />
-          <Route path="/users" element={<UsersPage />} />
           <Route path="/approvals" element={<Approvals />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/settings" element={<SettingsPage />} />

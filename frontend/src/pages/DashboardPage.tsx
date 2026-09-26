@@ -15,6 +15,7 @@ import type { RequestSummary } from "../types/workflow";
 export function Dashboard() {
   const { currentUser } = useAuth();
   const [requests, setRequests] = useState<RequestSummary[]>([]);
+  const [approvals, setApprovals] = useState<RequestSummary[]>([]);
 
   useEffect(() => {
     async function loadRequests() {
@@ -28,7 +29,17 @@ export function Dashboard() {
       }
     }
 
+    async function loadApprovals() {
+      try {
+        const data = await apiFetch<{ approvals: RequestSummary[] }>("/api/approvals?page=1&pageSize=2");
+        setApprovals(data.approvals);
+      } catch {
+        setApprovals([]);
+      }
+    }
+
     loadRequests();
+    loadApprovals();
   }, []);
 
   return (
@@ -82,9 +93,9 @@ export function Dashboard() {
             </div>
           </div>
           <div className="attention-list">
-            {requests.slice(0, 2).map((request) => (
+            {approvals.map((request) => (
               <Link
-                to={`/requests/${request.id}`}
+                to={`/requests/${request.id}?approval=1`}
                 className="attention-item"
                 key={request.id}
               >
@@ -99,6 +110,7 @@ export function Dashboard() {
                 <ChevronRight size={15} />
               </Link>
             ))}
+            {approvals.length === 0 && <p className="attention-empty">No approvals currently require your attention.</p>}
           </div>
           <Link to="/approvals" className="button button-secondary full-width">
             Open approval queue

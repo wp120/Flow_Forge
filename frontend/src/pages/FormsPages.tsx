@@ -12,11 +12,31 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Progress } from "../components/Progress";
 import { Button, Field, PageHeader, StatusBadge } from "../components/ui";
+import { useAuth } from "../contexts/AuthContext";
 import { apiFetch } from "../lib/api";
 
+type Pagination = { page: number; pageSize: number; total: number; totalPages: number };
+
+function PaginationControls({ pagination, onPageChange }: { pagination: Pagination; onPageChange: (page: number) => void }) {
+  if (pagination.totalPages <= 1) return null;
+
+  return (
+    <div className="pagination-controls">
+      <span>{pagination.total} total</span>
+      <div>
+        <Button variant="secondary" disabled={pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}>Previous</Button>
+        <span>Page {pagination.page} of {pagination.totalPages}</span>
+        <Button variant="secondary" disabled={pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next</Button>
+      </div>
+    </div>
+  );
+}
+
 export function Forms() {
+  const { currentUser } = useAuth();
+  if (currentUser?.role === "USER") return <UserForms />;
+
   const [forms, setForms] = useState<any[]>([]);
   const [section, setSection] = useState<"DRAFT" | "PUBLISHED" | "ARCHIVED">(
     "DRAFT",
@@ -121,6 +141,90 @@ export function Forms() {
           <div className="empty-state">No forms in this section.</div>
         )}
       </div>
+    </>
+  );
+}
+
+function UserForms() {
+  const [forms, setForms] = useState<any[]>([]);
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+
+  useEffect(() => {
+    apiFetch<{ forms: any[]; pagination: Pagination }>(`/api/user/forms?page=${pagination.page}&pageSize=${pagination.pageSize}`)
+      .then((data) => {
+        setForms(data.forms);
+        setPagination(data.pagination);
+      })
+      .catch(() => setForms([]));
+  }, [pagination.page, pagination.pageSize]);
+
+  return (
+    <>
+      <PageHeader eyebrow="AVAILABLE FORMS" title="Forms" description="Choose a published form to start a submission or view your previous submissions." />
+      <div className="resource-grid">
+        {forms.map((form) => (
+          <article className="resource-card" key={form.id}>
+            <span className="resource-icon"><FileText size={19} /></span>
+            <span className="form-version-label">Version {form.versionNumber}</span>
+            <h2>{form.name}</h2>
+            <p>{form.description}</p>
+            <div className="resource-meta">
+              <span><GitBranch size={14} /> {form.workflow}</span>
+              <span>{form.fields} fields</span>
+            </div>
+            <Link to={`/forms/${form.id}`} className="card-link">Open form <ChevronRight size={15} /></Link>
+          </article>
+        ))}
+        {forms.length === 0 && <div className="empty-state">No published forms are currently available.</div>}
+      </div>
+      <PaginationControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />
+    </>
+  );
+}
+
+export function FormSubmissions() {
+  const { id } = useParams();
+  const [form, setForm] = useState<{ name: string } | null>(null);
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+
+  useEffect(() => {
+    if (!id) return;
+    apiFetch<{ form: { name: string }; submissions: any[]; pagination: Pagination }>(`/api/user/forms/${id}/submissions?page=${pagination.page}&pageSize=${pagination.pageSize}`)
+      .then((data) => {
+        setForm(data.form);
+        setSubmissions(data.submissions);
+        setPagination(data.pagination);
+      })
+      .catch(() => {
+        setForm(null);
+        setSubmissions([]);
+      });
+  }, [id, pagination.page, pagination.pageSize]);
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="FORM SUBMISSIONS"
+        title={form?.name ?? "Form submissions"}
+        description="Your past and current submissions for this form."
+        action={id ? <Link to={`/forms/${id}/fill`} className="button button-primary"><Plus size={16} /> New submission</Link> : undefined}
+      />
+      <section className="panel"><div className="table-wrap"><table>
+        <thead><tr><th>Submission ID</th><th>Status</th><th>Submitted</th><th>Current workflow step</th><th /></tr></thead>
+        <tbody>
+          {submissions.length === 0 ? <tr><td colSpan={5}>No submissions for this form yet.</td></tr> : submissions.map((submission) => (
+            <tr key={submission.id}>
+              <td><Link to={`/requests/${submission.id}`} className="table-primary">{submission.id}</Link></td>
+              <td><StatusBadge status={submission.status} /></td>
+              <td>{new Date(submission.date).toLocaleString()}</td>
+              <td>{submission.step}</td>
+              <td><Link to={`/requests/${submission.id}`} className="icon-button" aria-label="View submission"><ChevronRight size={16} /></Link></td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div></section>
+      <PaginationControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />
     </>
   );
 }
@@ -447,12 +551,49 @@ export function FormEditor() {
   );
 }
 export function FillForm() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [form, setForm] = useState<any | null>(null);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    apiFetch<{ form: any }>(`/api/user/forms/${id}`)
+      .then((data) => setForm(data.form))
+      .catch(() => setForm(null));
+  }, [id]);
+
+  async function submitForm(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!id) return;
+
+    setSubmitting(true);
+    setError("");
+    try {
+      const result = await apiFetch<{ submission: { id: string } }>("/api/requests", {
+        method: "POST",
+        body: JSON.stringify({ formId: id, dataJson: values }),
+      });
+      navigate(`/requests/${result.submission.id}`);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Unable to submit this form.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!form) {
+    return <PageHeader eyebrow="NEW SUBMISSION" title="Form unavailable" description="This form may no longer be published." />;
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="NEW REQUEST"
-        title="Expense Reimbursement"
-        description="Submit this form to start the Finance approval workflow."
+        title={form.name}
+        description={form.description ?? `Submit to start the ${form.workflow} workflow.`}
         action={
           <Link to="/forms" className="back-link">
             <ArrowLeft size={15} /> Back to forms
@@ -460,43 +601,50 @@ export function FillForm() {
         }
       />
       <div className="editor-layout">
-        <section className="panel editor-panel">
+        <form className="panel editor-panel" onSubmit={submitForm}>
           <div className="panel-heading">
             <div>
               <h2>Request information</h2>
-              <p>Complete all required fields before submitting.</p>
+              <p>Complete the fields below before submitting.</p>
             </div>
           </div>
-          <div className="form-grid">
-            <Field label="Business purpose">
-              <input placeholder="What was this expense for?" />
-            </Field>
-            <Field label="Amount">
-              <input type="number" placeholder="0.00" />
-            </Field>
-          </div>
-          <Field label="Receipt">
-            <input type="file" />
-          </Field>
-          <Field label="Additional notes">
-            <textarea
-              placeholder="Add context for the approvers (optional)."
-              rows={4}
-            />
-          </Field>
+          {form.fields.map((field: { id?: string; label: string; type: string; required: boolean }, index: number) => {
+            const key = field.id ?? field.label;
+            const inputId = `submission-field-${index}`;
+            const updateValue = (value: unknown) => setValues((current) => ({ ...current, [field.label]: value }));
+            return (
+              <Field label={field.label} key={key}>
+                {field.type === "textarea" ? (
+                  <textarea id={inputId} required={field.required} rows={4} value={String(values[field.label] ?? "")} onChange={(event) => updateValue(event.target.value)} />
+                ) : field.type === "file" ? (
+                  <input id={inputId} type="file" required={field.required} onChange={(event) => updateValue(event.target.files?.[0]?.name ?? "")} />
+                ) : (
+                  <input id={inputId} type={field.type === "number" || field.type === "date" ? field.type : "text"} required={field.required} value={String(values[field.label] ?? "")} onChange={(event) => updateValue(event.target.value)} />
+                )}
+              </Field>
+            );
+          })}
+          {error && <div className="error-banner">{error}</div>}
           <div className="submit-row">
-            <Button variant="secondary">Save draft</Button>
-            <Button icon={Check}>Submit request</Button>
+            <Button type="submit" icon={Check} disabled={submitting}>{submitting ? "Submitting..." : "Submit request"}</Button>
           </div>
-        </section>
+        </form>
         <aside className="panel">
           <div className="panel-heading">
             <div>
               <h2>What happens next?</h2>
-              <p>Your request follows this workflow.</p>
+              <p>Your submission will follow this workflow.</p>
             </div>
           </div>
-          <Progress />
+          <div className="history">
+            <div>
+              <span className="history-icon pending"><GitBranch size={15} /></span>
+              <div>
+                <strong>{form.workflow}</strong>
+                <p>Approval steps begin after submission.</p>
+              </div>
+            </div>
+          </div>
         </aside>
       </div>
     </>

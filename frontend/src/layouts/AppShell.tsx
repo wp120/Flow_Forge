@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bell, ChevronRight, LogOut, Menu, Settings, X } from "lucide-react";
 import {
   Link,
@@ -18,6 +18,7 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { apiFetch } from "../lib/api";
 
 const navItems: {
   label: string;
@@ -36,12 +37,26 @@ const navItems: {
 export function AppShell() {
   const { currentUser, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [hasActionableApprovals, setHasActionableApprovals] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const role = currentUser?.role ?? "USER";
-  const items = navItems.filter(
-    (item) => !item.roles || item.roles.includes(role),
-  );
+
+  useEffect(() => {
+    if (role !== "USER") {
+      setHasActionableApprovals(false);
+      return;
+    }
+
+    apiFetch<{ pagination?: { total: number } }>("/api/approvals?page=1&pageSize=1")
+      .then((data) => setHasActionableApprovals((data.pagination?.total ?? 0) > 0))
+      .catch(() => setHasActionableApprovals(false));
+  }, [role]);
+
+  const items = navItems
+    .filter((item) => !item.roles || item.roles.includes(role))
+    .filter((item) => role === "ADMIN" || (item.label !== "Overview" && item.label !== "Approvals" && item.label !== "Workflows" && item.label !== "Users") || (item.label === "Approvals" && hasActionableApprovals))
+    .map((item) => role === "USER" && item.label === "Requests" ? { ...item, label: "My Submissions" } : item);
 
   async function handleLogout() {
     await logout();
@@ -83,7 +98,7 @@ export function AppShell() {
             >
               <ItemIcon size={17} />
               <span>{label}</span>
-              {label === "Approvals" && <span className="nav-count">2</span>}
+              {label === "Approvals" && hasActionableApprovals && <span className="nav-count">!</span>}
             </NavLink>
           ))}
         </nav>

@@ -9,34 +9,58 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Progress } from "../components/Progress";
 import { RequestTable } from "../components/RequestTable";
 import { Button, PageHeader, StatusBadge } from "../components/ui";
 import { apiFetch } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type Pagination = { page: number; pageSize: number; total: number; totalPages: number };
+
+function PageControls({ pagination, onPageChange }: { pagination: Pagination; onPageChange: (page: number) => void }) {
+  if (pagination.totalPages <= 1) return null;
+
+  return (
+    <div className="pagination-controls">
+      <span>{pagination.total} total</span>
+      <div>
+        <Button variant="secondary" disabled={pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}>Previous</Button>
+        <span>Page {pagination.page} of {pagination.totalPages}</span>
+        <Button variant="secondary" disabled={pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next</Button>
+      </div>
+    </div>
+  );
+}
 
 export function Requests() {
+  const { currentUser } = useAuth();
   const [requests, setRequests] = useState<any[]>([]);
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+  const regularUser = currentUser?.role === "USER";
 
   useEffect(() => {
     async function loadRequests() {
       try {
-        const data = await apiFetch<{ requests: any[] }>("/api/requests");
+        const data = await apiFetch<{ requests: any[]; pagination?: Pagination }>(
+          regularUser ? `/api/my-submissions?page=${pagination.page}&pageSize=${pagination.pageSize}` : "/api/requests",
+        );
         setRequests(data.requests);
+        if (data.pagination) setPagination(data.pagination);
       } catch {
         setRequests([]);
       }
     }
 
     loadRequests();
-  }, []);
+  }, [regularUser, pagination.page, pagination.pageSize]);
 
   return (
     <>
       <PageHeader
         eyebrow="OPERATIONS"
-        title="Requests"
-        description="Track every submitted request and its current workflow state."
+        title={regularUser ? "My Submissions" : "Requests"}
+        description={regularUser ? "Track submissions you have sent for approval." : "Track every submitted request and its current workflow state."}
       />
       <div className="toolbar">
         <div className="search-field">
@@ -50,14 +74,19 @@ export function Requests() {
       <section className="panel">
         <RequestTable rows={requests} />
       </section>
+      {regularUser && <PageControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />}
     </>
   );
 }
 
 export function RequestDetails() {
-  const approval = useLocation().pathname.includes("approvals");
+  const [searchParams] = useSearchParams();
+  const approval = searchParams.get("approval") === "1";
   const { id } = useParams();
+  const navigate = useNavigate();
   const [request, setRequest] = useState<any | null>(null);
+  const [decisionPending, setDecisionPending] = useState(false);
+  const [decisionError, setDecisionError] = useState("");
 
   useEffect(() => {
     if (id) {
@@ -66,6 +95,23 @@ export function RequestDetails() {
         .catch(() => setRequest(null));
     }
   }, [id]);
+
+  async function decide(decision: "APPROVED" | "REJECTED") {
+    if (!id) return;
+    setDecisionPending(true);
+    setDecisionError("");
+    try {
+      await apiFetch(`/api/approvals/${id}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      });
+      navigate("/approvals");
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : "Unable to record your decision.");
+    } finally {
+      setDecisionPending(false);
+    }
+  }
 
   if (!request) {
     return <PageHeader eyebrow="REQUEST DETAILS" title="Request not found" description="This request may no longer be available." />;
@@ -80,16 +126,17 @@ export function RequestDetails() {
         action={
           approval ? (
             <div className="header-actions">
-              <Button variant="danger" icon={X}>
+              <Button variant="danger" icon={X} onClick={() => decide("REJECTED")} disabled={decisionPending}>
                 Reject
               </Button>
-              <Button icon={Check}>Approve</Button>
+              <Button icon={Check} onClick={() => decide("APPROVED")} disabled={decisionPending}>Approve</Button>
             </div>
           ) : (
             <StatusBadge status={request.status} />
           )
         }
       />
+      {decisionError && <div className="error-banner">{decisionError}</div>}
       <div className="detail-layout">
         <div className="detail-main">
           <section className="panel">
@@ -125,17 +172,24 @@ export function RequestDetails() {
               </div>
             </div>
             <div className="history">
-              {request.steps.map((step: any) => (
+              {request.steps.map((step: any) => {
+                const rejected = step.status === "REJECTED";
+                const approved = step.status === "APPROVED";
+                const skipped = step.status === "SKIPPED";
+                const upcoming = step.status === "UPCOMING";
+                return (
                 <div key={step.id}>
-                  <span className={`history-icon ${step.status === "APPROVED" ? "success" : "pending"}`}>
-                    {step.status === "APPROVED" ? <Check size={15} /> : <Bell size={15} />}
+                  <span className={`history-icon ${approved ? "success" : rejected ? "rejected" : skipped || upcoming ? "skipped" : "pending"}`}>
+                    {approved ? <Check size={15} /> : rejected ? <X size={15} /> : skipped || upcoming ? <ChevronRight size={15} /> : <Bell size={15} />}
                   </span>
                   <div>
                     <strong>{step.name}</strong>
-                    <p>{step.actedBy ? `Acted by ${step.actedBy}` : `Status: ${step.status.toLowerCase()}`}</p>
+                    <p>{step.actedBy ? `Acted by ${step.actedBy}${step.actedAt ? ` · ${new Date(step.actedAt).toLocaleString()}` : ""}` : `Status: ${upcoming ? "upcoming" : step.status.toLowerCase()}`}</p>
+                    {step.comment && <p>{step.comment}</p>}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         </div>
@@ -147,7 +201,14 @@ export function RequestDetails() {
                 <p>{request.workflow}</p>
               </div>
             </div>
-            <Progress approval={approval} />
+            <Progress
+              approval={approval}
+              steps={request.steps}
+              currentStepId={request.currentStepId}
+              submissionStatus={request.status}
+              submittedAt={request.date}
+              submittedBy={request.submittedBy}
+            />
           </section>
           <section className="panel">
             <div className="panel-heading">
@@ -172,19 +233,21 @@ export function RequestDetails() {
 
 export function Approvals() {
   const [approvals, setApprovals] = useState<any[]>([]);
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
 
   useEffect(() => {
     async function loadApprovals() {
       try {
-        const data = await apiFetch<{ approvals: any[] }>("/api/approvals");
+        const data = await apiFetch<{ approvals: any[]; pagination?: Pagination }>(`/api/approvals?page=${pagination.page}&pageSize=${pagination.pageSize}`);
         setApprovals(data.approvals);
+        if (data.pagination) setPagination(data.pagination);
       } catch {
         setApprovals([]);
       }
     }
 
     loadApprovals();
-  }, []);
+  }, [pagination.page, pagination.pageSize]);
 
   return (
     <>
@@ -198,14 +261,14 @@ export function Approvals() {
           <ShieldCheck size={22} />
         </div>
         <div>
-          <strong>2 requests need your attention</strong>
+          <strong>{pagination.total} {pagination.total === 1 ? "request needs" : "requests need"} your attention</strong>
           <p>Review requests to keep work moving for your team.</p>
         </div>
       </div>
       <div className="approval-list">
-        {approvals.slice(0, 2).map((request) => (
+        {approvals.map((request) => (
           <Link
-            to={`/requests/${request.id}`}
+            to={`/requests/${request.id}?approval=1`}
             className="approval-card"
             key={request.id}
           >
@@ -227,7 +290,9 @@ export function Approvals() {
             </div>
           </Link>
         ))}
+        {approvals.length === 0 && <div className="empty-state">No submissions are currently assigned to you for approval.</div>}
       </div>
+      <PageControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />
     </>
   );
 }

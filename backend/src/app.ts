@@ -479,6 +479,197 @@ app.patch("/api/admin/users/:userId", requireAuth, requireAdmin, async (req, res
   return res.status(200).json({ user: sanitizeUser(updatedUser) });
 });
 
+function getPagination(req: Request) {
+  const requestedPage = Number.parseInt(String(req.query.page ?? "1"), 10);
+  const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? "10"), 10);
+  const page = Number.isFinite(requestedPage) ? Math.max(1, requestedPage) : 1;
+  const pageSize = Number.isFinite(requestedPageSize)
+    ? Math.min(100, Math.max(1, requestedPageSize))
+    : 10;
+
+  return { page, pageSize, skip: (page - 1) * pageSize };
+}
+
+app.get("/api/user/forms", requireAuth, async (req, res) => {
+  if (req.user!.role !== "USER") {
+    return res.status(403).json({ message: "This form listing is for regular users." });
+  }
+
+  const { page, pageSize, skip } = getPagination(req);
+  const where = {
+    companyId: req.user!.companyId,
+    status: "PUBLISHED" as const,
+    versions: { some: { status: "ACTIVE" as const } },
+  };
+
+  const [total, forms] = await Promise.all([
+    prisma.form.count({ where }),
+    prisma.form.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      skip,
+      take: pageSize,
+      include: {
+        versions: {
+          where: { status: "ACTIVE" },
+          orderBy: { versionNumber: "desc" },
+          take: 1,
+          include: { workflow: { select: { name: true } } },
+        },
+      },
+    }),
+  ]);
+
+  return res.status(200).json({
+    forms: forms.map((form) => {
+      const version = form.versions[0];
+      const schema = version?.schemaJson;
+      const fields = schema && typeof schema === "object" && !Array.isArray(schema) && Array.isArray((schema as { fields?: unknown }).fields)
+        ? (schema as { fields: unknown[] }).fields.length
+        : 0;
+
+      return {
+        id: form.id,
+        name: form.name,
+        description: form.description,
+        versionId: version?.id,
+        versionNumber: version?.versionNumber,
+        workflow: version?.workflow.name ?? "",
+        fields,
+      };
+    }),
+    pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+  });
+});
+
+app.get("/api/user/forms/:formId", requireAuth, async (req, res) => {
+  if (req.user!.role !== "USER") {
+    return res.status(403).json({ message: "This form view is for regular users." });
+  }
+
+  const form = await prisma.form.findFirst({
+    where: {
+      id: String(req.params.formId ?? ""),
+      companyId: req.user!.companyId,
+      status: "PUBLISHED",
+      versions: { some: { status: "ACTIVE" } },
+    },
+    include: {
+      versions: {
+        where: { status: "ACTIVE" },
+        orderBy: { versionNumber: "desc" },
+        take: 1,
+        include: { workflow: { select: { name: true } } },
+      },
+    },
+  });
+
+  if (!form || !form.versions[0]) {
+    return res.status(404).json({ message: "Published form not found." });
+  }
+
+  const version = form.versions[0];
+  const schema = version.schemaJson;
+  const fields = schema && typeof schema === "object" && !Array.isArray(schema) && Array.isArray((schema as { fields?: unknown }).fields)
+    ? (schema as { fields: unknown[] }).fields
+    : [];
+
+  return res.status(200).json({
+    form: {
+      id: form.id,
+      name: form.name,
+      description: form.description,
+      workflow: version.workflow.name,
+      versionNumber: version.versionNumber,
+      fields,
+    },
+  });
+});
+
+app.get("/api/user/forms/:formId/submissions", requireAuth, async (req, res) => {
+  if (req.user!.role !== "USER") {
+    return res.status(403).json({ message: "This submission listing is for regular users." });
+  }
+
+  const form = await prisma.form.findFirst({
+    where: {
+      id: String(req.params.formId ?? ""),
+      companyId: req.user!.companyId,
+      status: "PUBLISHED",
+      versions: { some: { status: "ACTIVE" } },
+    },
+    select: { id: true, name: true },
+  });
+
+  if (!form) {
+    return res.status(404).json({ message: "Published form not found." });
+  }
+
+  const { page, pageSize, skip } = getPagination(req);
+  const where = {
+    submittedBy: req.user!.userId,
+    formVersion: { formId: form.id },
+  };
+  const [total, submissions] = await Promise.all([
+    prisma.submission.count({ where }),
+    prisma.submission.findMany({
+      where,
+      orderBy: { submittedAt: "desc" },
+      skip,
+      take: pageSize,
+      include: { currentStep: { select: { name: true } } },
+    }),
+  ]);
+
+  return res.status(200).json({
+    form,
+    submissions: submissions.map((submission) => ({
+      id: submission.id,
+      status: submission.status,
+      date: submission.submittedAt.toISOString(),
+      step: submission.currentStep?.name ?? "Complete",
+    })),
+    pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+  });
+});
+
+app.get("/api/my-submissions", requireAuth, async (req, res) => {
+  if (req.user!.role !== "USER") {
+    return res.status(403).json({ message: "This submission listing is for regular users." });
+  }
+
+  const { page, pageSize, skip } = getPagination(req);
+  const where = {
+    submittedBy: req.user!.userId,
+    formVersion: { form: { companyId: req.user!.companyId } },
+  };
+  const [total, submissions] = await Promise.all([
+    prisma.submission.count({ where }),
+    prisma.submission.findMany({
+      where,
+      orderBy: { submittedAt: "desc" },
+      skip,
+      take: pageSize,
+      include: {
+        formVersion: { include: { form: { select: { name: true } } } },
+        currentStep: { select: { name: true } },
+      },
+    }),
+  ]);
+
+  return res.status(200).json({
+    requests: submissions.map((submission) => ({
+      id: submission.id,
+      form: submission.formVersion.form.name,
+      submittedBy: req.user!.name,
+      date: submission.submittedAt.toISOString(),
+      status: submission.status,
+      step: submission.currentStep?.name ?? "Complete",
+    })),
+    pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+  });
+});
+
 app.get("/api/forms", requireAuth, requireAdmin, async (req, res) => {
   const forms = await prisma.form.findMany({
     where: { companyId: req.user!.companyId },
@@ -632,7 +823,7 @@ app.patch("/api/forms/:formId", requireAuth, requireAdmin, async (req, res) => {
   const updated = await prisma.$transaction(async (tx) => {
     await tx.form.update({
       where: { id: formId },
-      data: { name, description: description || null, status: "DRAFT" },
+      data: { name, description: description || null },
     });
 
     return tx.formVersion.update({
@@ -744,6 +935,50 @@ app.get("/api/workflows", requireAuth, requireAdmin, async (req, res) => {
   });
 });
 
+app.get("/api/workflows/:workflowId", requireAuth, requireAdmin, async (req, res) => {
+  const workflow = await prisma.workflow.findFirst({
+    where: {
+      id: String(req.params.workflowId ?? ""),
+      companyId: req.user!.companyId,
+    },
+    include: {
+      steps: { orderBy: { stepOrder: "asc" } },
+      formVersions: {
+        where: { status: "ACTIVE" },
+        include: { form: { select: { id: true, name: true } } },
+        orderBy: { versionNumber: "desc" },
+        take: 1,
+      },
+    },
+  });
+
+  if (!workflow) {
+    return res.status(404).json({ message: "Workflow not found." });
+  }
+
+  return res.status(200).json({
+    workflow: {
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      status: workflow.status,
+      form: workflow.formVersions[0]?.form.name ?? "No form linked",
+      steps: workflow.steps.map((step) => {
+        const rule = step.approvalJson && typeof step.approvalJson === "object" && !Array.isArray(step.approvalJson)
+          ? step.approvalJson as Record<string, unknown>
+          : {};
+        return {
+          id: step.id,
+          name: step.name,
+          stepOrder: step.stepOrder,
+          approverType: String(rule.type ?? rule.kind ?? rule.scope ?? "ROLE").toUpperCase(),
+          approverValue: String(rule.value ?? rule.target ?? rule.name ?? ""),
+        };
+      }),
+    },
+  });
+});
+
 app.post("/api/workflows", requireAuth, requireAdmin, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const description = String(req.body?.description ?? "").trim();
@@ -823,7 +1058,6 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
   const submission = await prisma.submission.findFirst({
     where: {
       id: String(req.params.submissionId ?? ""),
-      ...(req.user!.role === "ADMIN" ? {} : { submittedBy: req.user!.userId }),
       formVersion: { form: { companyId: req.user!.companyId } },
     },
     include: {
@@ -845,6 +1079,14 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
     return res.status(404).json({ message: "Request not found." });
   }
 
+  if (
+    req.user!.role === "USER" &&
+    submission.submittedBy !== req.user!.userId &&
+    (submission.status !== "PENDING" || !submission.currentStep || !canUserApproveStep(req.user!, submission.currentStep))
+  ) {
+    return res.status(404).json({ message: "Request not found." });
+  }
+
   return res.status(200).json({
     request: {
       id: submission.id,
@@ -853,6 +1095,7 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
       submittedByEmail: submission.submitter.email,
       date: submission.submittedAt.toISOString(),
       status: submission.status,
+      currentStepId: submission.currentStepId,
       step: submission.currentStep?.name ?? "Complete",
       workflow: submission.formVersion.workflow.name,
       steps: submission.formVersion.workflow.steps.map((step) => {
@@ -860,8 +1103,11 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
         return {
           id: step.id,
           name: step.name,
-          status: history?.status ?? "PENDING",
+          status: history?.status ?? (submission.currentStepId === step.id ? "PENDING" : "UPCOMING"),
           actedBy: history?.actor?.name ?? null,
+          actedAt: history?.actedAt?.toISOString() ?? null,
+          comment: history?.comment ?? null,
+          approvalJson: step.approvalJson,
         };
       }),
       data: submission.dataJson,
@@ -870,6 +1116,8 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
 });
 
 app.get("/api/approvals", requireAuth, async (req, res) => {
+  const regularUser = req.user!.role === "USER";
+  const { page, pageSize, skip } = getPagination(req);
   const submissions = await prisma.submission.findMany({
     where: {
       status: "PENDING",
@@ -888,9 +1136,12 @@ app.get("/api/approvals", requireAuth, async (req, res) => {
   const visibleSubmissions = req.user!.role === "ADMIN"
     ? submissions
     : submissions.filter((submission) => submission.currentStep && canUserApproveStep(req.user!, submission.currentStep));
+  const pageSubmissions = regularUser
+    ? visibleSubmissions.slice(skip, skip + pageSize)
+    : visibleSubmissions;
 
   return res.status(200).json({
-    approvals: visibleSubmissions.map((submission) => ({
+    approvals: pageSubmissions.map((submission) => ({
       id: submission.id,
       form: submission.formVersion.form.name,
       submittedBy: submission.submitter.name,
@@ -898,6 +1149,14 @@ app.get("/api/approvals", requireAuth, async (req, res) => {
       status: submission.status,
       step: submission.currentStep?.name ?? "Awaiting review",
     })),
+    ...(regularUser && {
+      pagination: {
+        page,
+        pageSize,
+        total: visibleSubmissions.length,
+        totalPages: Math.ceil(visibleSubmissions.length / pageSize),
+      },
+    }),
   });
 });
 
@@ -913,6 +1172,7 @@ app.post("/api/requests", requireAuth, async (req, res) => {
     where: {
       id: formId,
       companyId: req.user!.companyId,
+      status: "PUBLISHED",
     },
     include: {
       versions: {
