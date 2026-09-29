@@ -200,7 +200,7 @@ model SubmissionFile {
   id               String @id @default(uuid()) @db.Uuid
   submissionId     String @db.Uuid
   fieldKey         String
-  storagePath      String
+  storagePath      String @unique
   originalFilename String
   mimeType         String
   sizeBytes        Int

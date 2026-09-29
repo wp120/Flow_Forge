@@ -3,31 +3,62 @@ import {
   Check,
   ChevronRight,
   ClipboardList,
+  Download,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { Progress } from "../components/Progress";
 import { RequestTable } from "../components/RequestTable";
 import { Button, PageHeader, StatusBadge } from "../components/ui";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
 
-type Pagination = { page: number; pageSize: number; total: number; totalPages: number };
+type Pagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
 
-function PageControls({ pagination, onPageChange }: { pagination: Pagination; onPageChange: (page: number) => void }) {
+function PageControls({
+  pagination,
+  onPageChange,
+}: {
+  pagination: Pagination;
+  onPageChange: (page: number) => void;
+}) {
   if (pagination.totalPages <= 1) return null;
 
   return (
     <div className="pagination-controls">
       <span>{pagination.total} total</span>
       <div>
-        <Button variant="secondary" disabled={pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}>Previous</Button>
-        <span>Page {pagination.page} of {pagination.totalPages}</span>
-        <Button variant="secondary" disabled={pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next</Button>
+        <Button
+          variant="secondary"
+          disabled={pagination.page <= 1}
+          onClick={() => onPageChange(pagination.page - 1)}
+        >
+          Previous
+        </Button>
+        <span>
+          Page {pagination.page} of {pagination.totalPages}
+        </span>
+        <Button
+          variant="secondary"
+          disabled={pagination.page >= pagination.totalPages}
+          onClick={() => onPageChange(pagination.page + 1)}
+        >
+          Next
+        </Button>
       </div>
     </div>
   );
@@ -36,14 +67,24 @@ function PageControls({ pagination, onPageChange }: { pagination: Pagination; on
 export function Requests() {
   const { currentUser } = useAuth();
   const [requests, setRequests] = useState<any[]>([]);
-  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState<Pagination>({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 0,
+  });
   const regularUser = currentUser?.role === "USER";
 
   useEffect(() => {
     async function loadRequests() {
       try {
-        const data = await apiFetch<{ requests: any[]; pagination?: Pagination }>(
-          regularUser ? `/api/my-submissions?page=${pagination.page}&pageSize=${pagination.pageSize}` : "/api/requests",
+        const data = await apiFetch<{
+          requests: any[];
+          pagination?: Pagination;
+        }>(
+          regularUser
+            ? `/api/my-submissions?page=${pagination.page}&pageSize=${pagination.pageSize}`
+            : "/api/requests",
         );
         setRequests(data.requests);
         if (data.pagination) setPagination(data.pagination);
@@ -60,7 +101,11 @@ export function Requests() {
       <PageHeader
         eyebrow="OPERATIONS"
         title={regularUser ? "My Submissions" : "Requests"}
-        description={regularUser ? "Track submissions you have sent for approval." : "Track every submitted request and its current workflow state."}
+        description={
+          regularUser
+            ? "Track submissions you have sent for approval."
+            : "Track every submitted request and its current workflow state."
+        }
       />
       <div className="toolbar">
         <div className="search-field">
@@ -74,7 +119,14 @@ export function Requests() {
       <section className="panel">
         <RequestTable rows={requests} />
       </section>
-      {regularUser && <PageControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />}
+      {regularUser && (
+        <PageControls
+          pagination={pagination}
+          onPageChange={(page) =>
+            setPagination((current) => ({ ...current, page }))
+          }
+        />
+      )}
     </>
   );
 }
@@ -107,14 +159,37 @@ export function RequestDetails() {
       });
       navigate("/approvals");
     } catch (error) {
-      setDecisionError(error instanceof Error ? error.message : "Unable to record your decision.");
+      setDecisionError(
+        error instanceof Error
+          ? error.message
+          : "Unable to record your decision.",
+      );
     } finally {
       setDecisionPending(false);
     }
   }
 
+  async function downloadFile(fileId: string) {
+    try {
+      const file = await apiFetch<{ url: string }>(
+        `/api/submission-files/${fileId}/download`,
+      );
+      window.open(file.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setDecisionError(
+        error instanceof Error ? error.message : "Unable to download file.",
+      );
+    }
+  }
+
   if (!request) {
-    return <PageHeader eyebrow="REQUEST DETAILS" title="Request not found" description="This request may no longer be available." />;
+    return (
+      <PageHeader
+        eyebrow="REQUEST DETAILS"
+        title="Request not found"
+        description="This request may no longer be available."
+      />
+    );
   }
 
   return (
@@ -126,10 +201,21 @@ export function RequestDetails() {
         action={
           approval ? (
             <div className="header-actions">
-              <Button variant="danger" icon={X} onClick={() => decide("REJECTED")} disabled={decisionPending}>
+              <Button
+                variant="danger"
+                icon={X}
+                onClick={() => decide("REJECTED")}
+                disabled={decisionPending}
+              >
                 Reject
               </Button>
-              <Button icon={Check} onClick={() => decide("APPROVED")} disabled={decisionPending}>Approve</Button>
+              <Button
+                icon={Check}
+                onClick={() => decide("APPROVED")}
+                disabled={decisionPending}
+              >
+                Approve
+              </Button>
             </div>
           ) : (
             <StatusBadge status={request.status} />
@@ -164,6 +250,46 @@ export function RequestDetails() {
               ))}
             </div>
           </section>
+          {request.files?.length > 0 && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Attachments</h2>
+                  <p>Files submitted with this request.</p>
+                </div>
+              </div>
+              <div className="history">
+                {request.files.map(
+                  (file: {
+                    id: string;
+                    fieldKey: string;
+                    originalFilename: string;
+                    sizeBytes: number;
+                  }) => (
+                    <div key={file.id}>
+                      <span className="history-icon pending">
+                        <Download size={15} />
+                      </span>
+                      <div>
+                        <strong>{file.originalFilename}</strong>
+                        <p>
+                          {file.fieldKey} · {(file.sizeBytes / 1024).toFixed(0)}{" "}
+                          KB
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="text-link"
+                        onClick={() => downloadFile(file.id)}
+                      >
+                        Download
+                      </button>
+                    </div>
+                  ),
+                )}
+              </div>
+            </section>
+          )}
           <section className="panel">
             <div className="panel-heading">
               <div>
@@ -178,16 +304,30 @@ export function RequestDetails() {
                 const skipped = step.status === "SKIPPED";
                 const upcoming = step.status === "UPCOMING";
                 return (
-                <div key={step.id}>
-                  <span className={`history-icon ${approved ? "success" : rejected ? "rejected" : skipped || upcoming ? "skipped" : "pending"}`}>
-                    {approved ? <Check size={15} /> : rejected ? <X size={15} /> : skipped || upcoming ? <ChevronRight size={15} /> : <Bell size={15} />}
-                  </span>
-                  <div>
-                    <strong>{step.name}</strong>
-                    <p>{step.actedBy ? `Acted by ${step.actedBy}${step.actedAt ? ` · ${new Date(step.actedAt).toLocaleString()}` : ""}` : `Status: ${upcoming ? "upcoming" : step.status.toLowerCase()}`}</p>
-                    {step.comment && <p>{step.comment}</p>}
+                  <div key={step.id}>
+                    <span
+                      className={`history-icon ${approved ? "success" : rejected ? "rejected" : skipped || upcoming ? "skipped" : "pending"}`}
+                    >
+                      {approved ? (
+                        <Check size={15} />
+                      ) : rejected ? (
+                        <X size={15} />
+                      ) : skipped || upcoming ? (
+                        <ChevronRight size={15} />
+                      ) : (
+                        <Bell size={15} />
+                      )}
+                    </span>
+                    <div>
+                      <strong>{step.name}</strong>
+                      <p>
+                        {step.actedBy
+                          ? `Acted by ${step.actedBy}${step.actedAt ? ` · ${new Date(step.actedAt).toLocaleString()}` : ""}`
+                          : `Status: ${upcoming ? "upcoming" : step.status.toLowerCase()}`}
+                      </p>
+                      {step.comment && <p>{step.comment}</p>}
+                    </div>
                   </div>
-                </div>
                 );
               })}
             </div>
@@ -233,12 +373,22 @@ export function RequestDetails() {
 
 export function Approvals() {
   const [approvals, setApprovals] = useState<any[]>([]);
-  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState<Pagination>({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 0,
+  });
 
   useEffect(() => {
     async function loadApprovals() {
       try {
-        const data = await apiFetch<{ approvals: any[]; pagination?: Pagination }>(`/api/approvals?page=${pagination.page}&pageSize=${pagination.pageSize}`);
+        const data = await apiFetch<{
+          approvals: any[];
+          pagination?: Pagination;
+        }>(
+          `/api/approvals?page=${pagination.page}&pageSize=${pagination.pageSize}`,
+        );
         setApprovals(data.approvals);
         if (data.pagination) setPagination(data.pagination);
       } catch {
@@ -261,7 +411,11 @@ export function Approvals() {
           <ShieldCheck size={22} />
         </div>
         <div>
-          <strong>{pagination.total} {pagination.total === 1 ? "request needs" : "requests need"} your attention</strong>
+          <strong>
+            {pagination.total}{" "}
+            {pagination.total === 1 ? "request needs" : "requests need"} your
+            attention
+          </strong>
           <p>Review requests to keep work moving for your team.</p>
         </div>
       </div>
@@ -290,9 +444,18 @@ export function Approvals() {
             </div>
           </Link>
         ))}
-        {approvals.length === 0 && <div className="empty-state">No submissions are currently assigned to you for approval.</div>}
+        {approvals.length === 0 && (
+          <div className="empty-state">
+            No submissions are currently assigned to you for approval.
+          </div>
+        )}
       </div>
-      <PageControls pagination={pagination} onPageChange={(page) => setPagination((current) => ({ ...current, page }))} />
+      <PageControls
+        pagination={pagination}
+        onPageChange={(page) =>
+          setPagination((current) => ({ ...current, page }))
+        }
+      />
     </>
   );
 }

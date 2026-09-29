@@ -38,6 +38,7 @@ export function AppShell() {
   const { currentUser, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [hasActionableApprovals, setHasActionableApprovals] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const location = useLocation();
   const navigate = useNavigate();
   const role = currentUser?.role ?? "USER";
@@ -48,15 +49,50 @@ export function AppShell() {
       return;
     }
 
-    apiFetch<{ pagination?: { total: number } }>("/api/approvals?page=1&pageSize=1")
-      .then((data) => setHasActionableApprovals((data.pagination?.total ?? 0) > 0))
+    apiFetch<{ pagination?: { total: number } }>(
+      "/api/approvals?page=1&pageSize=1",
+    )
+      .then((data) =>
+        setHasActionableApprovals((data.pagination?.total ?? 0) > 0),
+      )
       .catch(() => setHasActionableApprovals(false));
   }, [role]);
 
+  useEffect(() => {
+    function refreshUnreadCount() {
+      apiFetch<{ unreadCount: number }>("/api/notifications?page=1&pageSize=1")
+        .then((data) => setUnreadNotifications(data.unreadCount))
+        .catch(() => setUnreadNotifications(0));
+    }
+
+    refreshUnreadCount();
+    window.addEventListener(
+      "flowforge:notifications-updated",
+      refreshUnreadCount,
+    );
+    return () =>
+      window.removeEventListener(
+        "flowforge:notifications-updated",
+        refreshUnreadCount,
+      );
+  }, [location.pathname]);
+
   const items = navItems
     .filter((item) => !item.roles || item.roles.includes(role))
-    .filter((item) => role === "ADMIN" || (item.label !== "Overview" && item.label !== "Approvals" && item.label !== "Workflows" && item.label !== "Users") || (item.label === "Approvals" && hasActionableApprovals))
-    .map((item) => role === "USER" && item.label === "Requests" ? { ...item, label: "My Submissions" } : item);
+    .filter(
+      (item) =>
+        role === "ADMIN" ||
+        (item.label !== "Overview" &&
+          item.label !== "Approvals" &&
+          item.label !== "Workflows" &&
+          item.label !== "Users") ||
+        (item.label === "Approvals" && hasActionableApprovals),
+    )
+    .map((item) =>
+      role === "USER" && item.label === "Requests"
+        ? { ...item, label: "My Submissions" }
+        : item,
+    );
 
   async function handleLogout() {
     await logout();
@@ -98,7 +134,9 @@ export function AppShell() {
             >
               <ItemIcon size={17} />
               <span>{label}</span>
-              {label === "Approvals" && hasActionableApprovals && <span className="nav-count">!</span>}
+              {label === "Approvals" && hasActionableApprovals && (
+                <span className="nav-count">!</span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -106,7 +144,9 @@ export function AppShell() {
           <NavLink to="/notifications" className="nav-item">
             <Bell size={17} />
             <span>Notifications</span>
-            <span className="notification-dot" />
+            {unreadNotifications > 0 && (
+              <span className="nav-count">{unreadNotifications}</span>
+            )}
           </NavLink>
           <NavLink to="/settings" className="nav-item">
             <Settings size={17} />
@@ -138,7 +178,7 @@ export function AppShell() {
               to="/notifications"
             >
               <Bell size={18} />
-              <span className="notification-dot" />
+              {unreadNotifications > 0 && <span className="notification-dot" />}
             </Link>
             <div className="profile">
               <span className="avatar">

@@ -184,20 +184,78 @@ export function UsersPage() {
 }
 
 export function Notifications() {
-  const notifications = [
-    {
-      title: "Approval needed",
-      body: "A new request is waiting for your decision.",
-      time: "Just now",
-      unread: true,
-    },
-    {
-      title: "Workflow update",
-      body: "A workflow was updated for this workspace.",
-      time: "Yesterday",
-      unread: false,
-    },
-  ];
+  const [notifications, setNotifications] = useState<
+    Array<{
+      id: string;
+      type: string;
+      title: string;
+      message: string;
+      isRead: boolean;
+      createdAt: string;
+      relatedEntityType: string | null;
+      relatedEntityId: string | null;
+    }>
+  >([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 0,
+  });
+  const [error, setError] = useState("");
+
+  async function loadNotifications(targetPage = page) {
+    try {
+      const data = await apiFetch<{
+        notifications: typeof notifications;
+        pagination: typeof pagination;
+      }>(`/api/notifications?page=${targetPage}&pageSize=10`);
+      setNotifications(data.notifications);
+      setPagination(data.pagination);
+      setError("");
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load notifications.",
+      );
+    }
+  }
+
+  useEffect(() => {
+    loadNotifications(page);
+  }, [page]);
+
+  async function markRead(notificationId: string) {
+    try {
+      await apiFetch(`/api/notifications/${notificationId}/read`, {
+        method: "PATCH",
+      });
+      window.dispatchEvent(new Event("flowforge:notifications-updated"));
+      await loadNotifications();
+    } catch (readError) {
+      setError(
+        readError instanceof Error
+          ? readError.message
+          : "Unable to update notification.",
+      );
+    }
+  }
+
+  async function markAllRead() {
+    try {
+      await apiFetch("/api/notifications/read-all", { method: "PATCH" });
+      window.dispatchEvent(new Event("flowforge:notifications-updated"));
+      await loadNotifications();
+    } catch (readError) {
+      setError(
+        readError instanceof Error
+          ? readError.message
+          : "Unable to update notifications.",
+      );
+    }
+  }
 
   return (
     <>
@@ -205,26 +263,66 @@ export function Notifications() {
         eyebrow="INBOX"
         title="Notifications"
         description="Updates about your requests and workspace."
-        action={<button className="text-link">Mark all as read</button>}
+        action={
+          <button className="text-link" type="button" onClick={markAllRead}>
+            Mark all as read
+          </button>
+        }
       />
+      {error && <div className="error-banner">{error}</div>}
       <section className="panel notification-list">
         {notifications.map((notification) => (
           <div
-            className={`notification-item ${notification.unread ? "unread" : ""}`}
-            key={notification.title}
+            className={`notification-item ${notification.isRead ? "" : "unread"}`}
+            key={notification.id}
           >
             <span className="notification-icon">
               <Bell size={17} />
             </span>
             <div>
               <strong>{notification.title}</strong>
-              <p>{notification.body}</p>
-              <small>{notification.time}</small>
+              <p>{notification.message}</p>
+              <small>{new Date(notification.createdAt).toLocaleString()}</small>
             </div>
-            {notification.unread && <span className="unread-dot" />}
+            {!notification.isRead && (
+              <button
+                className="text-link"
+                type="button"
+                onClick={() => markRead(notification.id)}
+              >
+                Mark read
+              </button>
+            )}
           </div>
         ))}
+        {notifications.length === 0 && (
+          <p className="attention-empty">No notifications yet.</p>
+        )}
       </section>
+      {pagination.totalPages > 1 && (
+        <div className="pagination-controls">
+          <span>{pagination.total} total</span>
+          <div>
+            <Button
+              variant="secondary"
+              disabled={page <= 1}
+              onClick={() => setPage((current) => current - 1)}
+            >
+              Previous
+            </Button>
+            <span>
+              Page {page} of {pagination.totalPages}
+            </span>
+            <Button
+              variant="secondary"
+              disabled={page >= pagination.totalPages}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

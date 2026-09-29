@@ -41,6 +41,16 @@ npm run prisma:generate
 
 Copy `backend/.env.example` to `backend/.env` and adjust `DATABASE_URL` if your local PostgreSQL credentials differ.
 
+For file uploads and asynchronous notification jobs, configure `SUPABASE_URL`,
+`SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET`, and `REDIS_URL` in
+`backend/.env`. Configure `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and
+`VITE_SUPABASE_STORAGE_BUCKET` in `frontend/.env`. Create the private Supabase
+Storage bucket named by `SUPABASE_STORAGE_BUCKET` before uploading. The service
+secret key must remain backend-only. Set the bucket's maximum file size to 20 MB
+in Supabase Storage as well; the API independently verifies actual uploaded size
+before accepting an attachment. Signed upload URLs expire after two minutes.
+The worker removes unassociated user uploads older than 24 hours when possible.
+
 ## Run locally
 
 In one terminal:
@@ -48,6 +58,13 @@ In one terminal:
 ```bash
 cd backend
 npm run dev
+```
+
+Run the notification worker in another backend terminal:
+
+```bash
+cd backend
+npm run dev:worker
 ```
 
 The API listens on `http://localhost:3001` and exposes `GET /health`.

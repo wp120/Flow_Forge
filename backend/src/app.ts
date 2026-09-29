@@ -1,10 +1,13 @@
-import "dotenv/config";
+import "./env";
 import bcrypt from "bcryptjs";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
-import { PrismaClient, type User, type UserRole, type UserStatus } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { Prisma, PrismaClient, type User, type UserRole, type UserStatus } from "@prisma/client";
+import { enqueueNotification } from "./notificationQueue";
+import { getOwnedUploadPrefix, getStorageClient, MAX_UPLOAD_SIZE_BYTES, STORAGE_BUCKET } from "./storage";
 
 export type AuthUser = {
   userId: string;
@@ -28,6 +31,61 @@ const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME ?? "flowforge_session";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? "8h";
+
+type NotificationType = "APPROVAL_REQUIRED" | "SUBMISSION_APPROVED" | "SUBMISSION_REJECTED";
+
+type NewNotification = {
+  companyId: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  relatedEntityType: string;
+  relatedEntityId: string;
+};
+
+function enqueueNotificationsBestEffort(notificationIds: string[]) {
+  for (const notificationId of notificationIds) {
+    setImmediate(() => {
+      enqueueNotification(notificationId).catch((error) => {
+        console.error(`Unable to enqueue notification ${notificationId}:`, error);
+      });
+    });
+  }
+}
+
+async function resolveApproverUsers(
+  tx: Prisma.TransactionClient,
+  companyId: string,
+  approvalJson: unknown,
+) {
+  if (!approvalJson || typeof approvalJson !== "object" || Array.isArray(approvalJson)) return [];
+  const config = approvalJson as Record<string, unknown>;
+  const type = String(config.type ?? config.kind ?? config.scope ?? "").toUpperCase();
+  const value = String(config.value ?? config.target ?? config.name ?? "").trim();
+  const where = {
+    companyId,
+    status: "ACTIVE" as const,
+    ...(type === "USER" ? { id: value } : {}),
+    ...(type === "ROLE" ? { role: value as UserRole } : {}),
+    ...(type === "DEPARTMENT" ? { department: value } : {}),
+    ...(type === "ADMIN" ? { role: "ADMIN" as UserRole } : {}),
+  };
+
+  if (!["USER", "ROLE", "DEPARTMENT", "ADMIN"].includes(type) || !value) return [];
+  return tx.user.findMany({ where, select: { id: true } });
+}
+
+async function createInAppNotifications(
+  tx: Prisma.TransactionClient,
+  notifications: NewNotification[],
+) {
+  const created = [];
+  for (const notification of notifications) {
+    created.push(await tx.notification.create({ data: notification, select: { id: true } }));
+  }
+  return created.map((notification) => notification.id);
+}
 
 export const app = express();
 
@@ -489,6 +547,121 @@ function getPagination(req: Request) {
 
   return { page, pageSize, skip: (page - 1) * pageSize };
 }
+
+app.get("/api/notifications", requireAuth, async (req, res) => {
+  const { page, pageSize, skip } = getPagination(req);
+  const where = { companyId: req.user!.companyId, userId: req.user!.userId };
+  const [total, unreadCount, notifications] = await Promise.all([
+    prisma.notification.count({ where }),
+    prisma.notification.count({ where: { ...where, isRead: false } }),
+    prisma.notification.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: pageSize,
+    }),
+  ]);
+
+  return res.status(200).json({
+    notifications,
+    unreadCount,
+    pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+  });
+});
+
+app.patch("/api/notifications/:notificationId/read", requireAuth, async (req, res) => {
+  const result = await prisma.notification.updateMany({
+    where: {
+      id: String(req.params.notificationId ?? ""),
+      companyId: req.user!.companyId,
+      userId: req.user!.userId,
+      isRead: false,
+    },
+    data: { isRead: true, readAt: new Date() },
+  });
+
+  if (result.count === 0) {
+    const notification = await prisma.notification.findFirst({
+      where: {
+        id: String(req.params.notificationId ?? ""),
+        companyId: req.user!.companyId,
+        userId: req.user!.userId,
+      },
+      select: { id: true },
+    });
+    if (!notification) return res.status(404).json({ message: "Notification not found." });
+  }
+
+  return res.status(200).json({ message: "Notification marked as read." });
+});
+
+app.patch("/api/notifications/read-all", requireAuth, async (req, res) => {
+  const result = await prisma.notification.updateMany({
+    where: { companyId: req.user!.companyId, userId: req.user!.userId, isRead: false },
+    data: { isRead: true, readAt: new Date() },
+  });
+  return res.status(200).json({ updated: result.count });
+});
+
+app.post("/api/uploads/sign", requireAuth, async (req, res) => {
+  const formId = String(req.body?.formId ?? "").trim();
+  const fieldKey = String(req.body?.fieldKey ?? "").trim();
+  const originalFilename = String(req.body?.originalFilename ?? "").trim();
+  const mimeType = String(req.body?.mimeType ?? "application/octet-stream").trim();
+  const sizeBytes = Number(req.body?.sizeBytes);
+
+  if (!formId || !fieldKey || !originalFilename || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_UPLOAD_SIZE_BYTES) {
+    return res.status(400).json({ message: "Form, field, filename, and a valid file size up to 20 MB are required." });
+  }
+
+  const form = await prisma.form.findFirst({
+    where: {
+      id: formId,
+      companyId: req.user!.companyId,
+      status: "PUBLISHED",
+      versions: { some: { status: "ACTIVE" } },
+    },
+    include: {
+      versions: {
+        where: { status: "ACTIVE" },
+        orderBy: { versionNumber: "desc" },
+        take: 1,
+      },
+    },
+  });
+
+  if (!form || !form.versions[0]) return res.status(404).json({ message: "Published form not found." });
+
+  const schema = form.versions[0].schemaJson;
+  const fields = schema && typeof schema === "object" && !Array.isArray(schema) && Array.isArray((schema as { fields?: unknown }).fields)
+    ? (schema as { fields: Array<{ id?: string; label?: string; type?: string }> }).fields
+    : [];
+  const fileField = fields.find((field) => (field.id ?? field.label) === fieldKey && field.type === "file");
+  if (!fileField) return res.status(400).json({ message: "The selected form field does not accept files." });
+
+  try {
+    const storagePath = `${getOwnedUploadPrefix(req.user!.companyId, req.user!.userId)}${randomUUID()}`;
+    const { data, error } = await getStorageClient().storage.from(STORAGE_BUCKET).createSignedUploadUrl(storagePath, { upsert: false });
+    if (error) throw error;
+
+    return res.status(201).json({
+      storagePath,
+      token: data.token,
+      signedUrl: data.signedUrl,
+      originalFilename,
+      mimeType,
+      sizeBytes,
+      expiresInSeconds: 120,
+    });
+  } catch (error) {
+    console.error("Create signed upload URL error:", error);
+    return res.status(503).json({
+      message: error instanceof Error && error.message.startsWith("Supabase Storage is not configured.")
+        ? error.message
+        : "File storage is unavailable. Check the backend log for the Supabase Storage error.",
+    });
+  }
+});
 
 app.get("/api/user/forms", requireAuth, async (req, res) => {
   if (req.user!.role !== "USER") {
@@ -1072,6 +1245,9 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
       steps: {
         include: { actor: { select: { name: true } }, workflowStep: true },
       },
+      files: {
+        select: { id: true, fieldKey: true, originalFilename: true, mimeType: true, sizeBytes: true },
+      },
     },
   });
 
@@ -1111,8 +1287,44 @@ app.get("/api/requests/:submissionId", requireAuth, async (req, res) => {
         };
       }),
       data: submission.dataJson,
+      files: submission.files,
     },
   });
+});
+
+app.get("/api/submission-files/:fileId/download", requireAuth, async (req, res) => {
+  const file = await prisma.submissionFile.findFirst({
+    where: {
+      id: String(req.params.fileId ?? ""),
+      submission: { formVersion: { form: { companyId: req.user!.companyId } } },
+    },
+    include: {
+      submission: {
+        include: {
+          currentStep: true,
+          formVersion: { include: { form: { select: { companyId: true } } } },
+        },
+      },
+    },
+  });
+
+  if (!file) return res.status(404).json({ message: "File not found." });
+  const isOwner = file.submission.submittedBy === req.user!.userId;
+  const isCurrentApprover = file.submission.status === "PENDING" &&
+    !!file.submission.currentStep &&
+    canUserApproveStep(req.user!, file.submission.currentStep);
+  if (req.user!.role !== "ADMIN" && !isOwner && !isCurrentApprover) {
+    return res.status(404).json({ message: "File not found." });
+  }
+
+  try {
+    const { data, error } = await getStorageClient().storage.from(STORAGE_BUCKET).createSignedUrl(file.storagePath, 60);
+    if (error) throw error;
+    return res.status(200).json({ url: data.signedUrl, filename: file.originalFilename });
+  } catch (error) {
+    console.error("Create signed download URL error:", error);
+    return res.status(503).json({ message: "File storage is unavailable or not configured." });
+  }
 });
 
 app.get("/api/approvals", requireAuth, async (req, res) => {
@@ -1162,7 +1374,16 @@ app.get("/api/approvals", requireAuth, async (req, res) => {
 
 app.post("/api/requests", requireAuth, async (req, res) => {
   const formId = String(req.body?.formId ?? "").trim();
-  const dataJson = req.body?.dataJson ?? {};
+  const submittedData = req.body?.dataJson && typeof req.body.dataJson === "object" && !Array.isArray(req.body.dataJson)
+    ? req.body.dataJson as Record<string, unknown>
+    : {};
+  const uploadInputs = Array.isArray(req.body?.files) ? req.body.files as Array<{
+    fieldKey?: string;
+    storagePath?: string;
+    originalFilename?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+  }> : [];
 
   if (!formId) {
     return res.status(400).json({ message: "A form id is required." });
@@ -1196,14 +1417,91 @@ app.post("/api/requests", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "This form does not have an active version yet." });
   }
 
+  const schema = selectedVersion.schemaJson;
+  const fields = schema && typeof schema === "object" && !Array.isArray(schema) && Array.isArray((schema as { fields?: unknown }).fields)
+    ? (schema as { fields: Array<{ id?: string; label?: string; type?: string; required?: boolean }> }).fields
+    : [];
+  const fileFields = new Map(fields.filter((field) => field.type === "file").map((field) => [field.id ?? field.label ?? "", field]));
+  const fileUploads = uploadInputs.map((upload) => ({
+    fieldKey: String(upload.fieldKey ?? ""),
+    storagePath: String(upload.storagePath ?? ""),
+    originalFilename: String(upload.originalFilename ?? "").trim(),
+    mimeType: String(upload.mimeType ?? "application/octet-stream").trim(),
+    sizeBytes: Number(upload.sizeBytes),
+  }));
+
+  for (const field of fields) {
+    if (!field.required) continue;
+    const fieldKey = field.id ?? field.label ?? "";
+    const value = submittedData[field.label ?? ""];
+    if (field.type === "file") {
+      if (!fileUploads.some((file) => file.fieldKey === fieldKey)) {
+        return res.status(400).json({ message: `${field.label ?? "A required file"} is required.` });
+      }
+    } else if (value === undefined || value === null || value === "") {
+      return res.status(400).json({ message: `${field.label ?? "A required field"} is required.` });
+    }
+  }
+
+  if (fileUploads.some((file) => !fileFields.has(file.fieldKey) || !file.originalFilename || !file.storagePath || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes <= 0 || file.sizeBytes > MAX_UPLOAD_SIZE_BYTES)) {
+    return res.status(400).json({ message: "One or more uploaded files do not match this form or have invalid metadata." });
+  }
+
+  if (new Set(fileUploads.map((file) => file.storagePath)).size !== fileUploads.length) {
+    return res.status(400).json({ message: "A file cannot be attached more than once." });
+  }
+
+  if (fileUploads.length > 0) {
+    const storage = getStorageClient().storage.from(STORAGE_BUCKET);
+    const ownedPrefix = getOwnedUploadPrefix(req.user!.companyId, req.user!.userId);
+    const previouslyAttached = await prisma.submissionFile.findMany({
+      where: { storagePath: { in: fileUploads.map((file) => file.storagePath) } },
+      select: { storagePath: true },
+    });
+    if (previouslyAttached.length > 0) {
+      return res.status(409).json({ message: "One or more uploaded files have already been submitted." });
+    }
+
+    for (const file of fileUploads) {
+      if (!file.storagePath.startsWith(ownedPrefix)) {
+        return res.status(403).json({ message: "An uploaded file does not belong to your account." });
+      }
+
+      const separator = file.storagePath.lastIndexOf("/");
+      const directory = file.storagePath.slice(0, separator);
+      const objectName = file.storagePath.slice(separator + 1);
+      const { data: objects, error } = await storage.list(directory, { search: objectName, limit: 100 });
+      if (error) {
+        console.error("Verify uploaded file error:", error);
+        return res.status(503).json({ message: "Unable to verify uploaded files with storage." });
+      }
+      const object = objects.find((candidate) => candidate.name === objectName);
+      const actualSize = Number(object?.metadata?.size ?? object?.metadata?.contentLength);
+      if (!object || !Number.isFinite(actualSize) || actualSize !== file.sizeBytes || actualSize > MAX_UPLOAD_SIZE_BYTES) {
+        return res.status(400).json({ message: `Uploaded file ${file.originalFilename} was not found or its metadata does not match.` });
+      }
+      file.mimeType = String(object.metadata?.mimetype ?? file.mimeType);
+    }
+  }
+
+  const dataJson: Record<string, unknown> = { ...submittedData };
+  for (const [fieldKey] of fileFields) {
+    const fieldFiles = fileUploads.filter((file) => file.fieldKey === fieldKey);
+    if (fieldFiles.length > 0) {
+      dataJson[fieldKey] = fieldFiles.map((file) => file.originalFilename);
+    } else {
+      delete dataJson[fieldKey];
+    }
+  }
+
   const firstStep = selectedVersion.workflow.steps[0];
 
-  const submission = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const createdSubmission = await tx.submission.create({
       data: {
         formVersionId: selectedVersion.id,
         submittedBy: req.user!.userId,
-        dataJson,
+        dataJson: dataJson as Prisma.InputJsonValue,
         status: "PENDING",
         currentStepId: firstStep?.id ?? null,
         updatedBy: req.user!.userId,
@@ -1223,10 +1521,37 @@ app.post("/api/requests", requireAuth, async (req, res) => {
       });
     }
 
-    return createdSubmission;
+    if (fileUploads.length > 0) {
+      await tx.submissionFile.createMany({
+        data: fileUploads.map((file) => ({
+          submissionId: createdSubmission.id,
+          fieldKey: file.fieldKey,
+          storagePath: file.storagePath,
+          originalFilename: file.originalFilename,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+        })),
+      });
+    }
+
+    const approvers = firstStep
+      ? await resolveApproverUsers(tx, req.user!.companyId, firstStep.approvalJson)
+      : [];
+    const notificationIds = await createInAppNotifications(tx, approvers.map((approver) => ({
+      companyId: req.user!.companyId,
+      userId: approver.id,
+      type: "APPROVAL_REQUIRED" as const,
+      title: "Approval required",
+      message: `${req.user!.name} submitted ${form.name} for your review.`,
+      relatedEntityType: "SUBMISSION",
+      relatedEntityId: createdSubmission.id,
+    })));
+
+    return { submission: createdSubmission, notificationIds };
   });
 
-  return res.status(201).json({ submission });
+  enqueueNotificationsBestEffort(result.notificationIds);
+  return res.status(201).json({ submission: result.submission });
 });
 
 app.post("/api/approvals/:submissionId/decision", requireAuth, async (req, res) => {
@@ -1246,6 +1571,7 @@ app.post("/api/approvals/:submissionId/decision", requireAuth, async (req, res) 
       currentStep: true,
       formVersion: {
         include: {
+          form: { select: { name: true } },
           workflow: {
             include: {
               steps: { orderBy: { stepOrder: "asc" } },
@@ -1317,7 +1643,17 @@ app.post("/api/approvals/:submissionId/decision", requireAuth, async (req, res) 
           },
         });
 
-        return { outcome: "REJECTED" };
+        const notificationIds = await createInAppNotifications(tx, [{
+          companyId: req.user!.companyId,
+          userId: submission.submittedBy,
+          type: "SUBMISSION_REJECTED",
+          title: "Submission rejected",
+          message: `${submission.formVersion.form.name} was rejected by ${req.user!.name}.`,
+          relatedEntityType: "SUBMISSION",
+          relatedEntityId: submission.id,
+        }]);
+
+        return { outcome: "REJECTED", notificationIds };
       }
 
       const workflowSteps = submission.formVersion.workflow.steps;
@@ -1341,7 +1677,18 @@ app.post("/api/approvals/:submissionId/decision", requireAuth, async (req, res) 
           },
         }).catch(() => undefined);
 
-        return { outcome: "ADVANCED" };
+        const nextApprovers = await resolveApproverUsers(tx, req.user!.companyId, nextStep.approvalJson);
+        const notificationIds = await createInAppNotifications(tx, nextApprovers.map((approver) => ({
+          companyId: req.user!.companyId,
+          userId: approver.id,
+          type: "APPROVAL_REQUIRED" as const,
+          title: "Approval required",
+          message: `${submission.formVersion.form.name} is ready for your review.`,
+          relatedEntityType: "SUBMISSION",
+          relatedEntityId: submission.id,
+        })));
+
+        return { outcome: "ADVANCED", notificationIds };
       }
 
       await tx.submission.update({
@@ -1353,8 +1700,20 @@ app.post("/api/approvals/:submissionId/decision", requireAuth, async (req, res) 
         },
       });
 
-      return { outcome: "APPROVED" };
+      const notificationIds = await createInAppNotifications(tx, [{
+        companyId: req.user!.companyId,
+        userId: submission.submittedBy,
+        type: "SUBMISSION_APPROVED",
+        title: "Submission approved",
+        message: `${submission.formVersion.form.name} was approved.`,
+        relatedEntityType: "SUBMISSION",
+        relatedEntityId: submission.id,
+      }]);
+
+      return { outcome: "APPROVED", notificationIds };
     });
+
+    enqueueNotificationsBestEffort(transactionResult.notificationIds);
 
     if (transactionResult.outcome === "REJECTED") {
       return res.status(200).json({ message: "Submission rejected." });
