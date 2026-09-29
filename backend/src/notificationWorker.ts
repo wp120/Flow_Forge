@@ -4,6 +4,7 @@ import IORedis from "ioredis";
 import { PrismaClient } from "@prisma/client";
 import { NOTIFICATION_QUEUE_NAME } from "./notificationQueue";
 import { getOwnedUploadPrefix, getStorageClient, STORAGE_BUCKET } from "./storage";
+import { Resend } from "resend";
 
 const prisma = new PrismaClient();
 
@@ -48,14 +49,29 @@ const connection = new IORedis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
   maxRetriesPerRequest: null,
 });
 
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 const worker = new Worker(
   NOTIFICATION_QUEUE_NAME,
   async (job) => {
     const notification = await prisma.notification.findUnique({
       where: { id: job.data.notificationId },
-      select: { id: true, type: true },
+    //   select: { id: true, type: true },
     });
     if (!notification) throw new Error(`Notification ${job.data.notificationId} does not exist.`);
+
+    console.log("notification: ", notification);
+
+    if(["SUBMISSION_REJECTED", "SUBMISSION_APPROVED"].includes(notification.type)){
+        await resend.emails.send({
+            from: process.env.EMAIL_FROM!,
+            // to: notification.userId,
+            to: "parthbhosle2002@gmail.com",
+            subject: notification.title,
+            html: notification.message,
+        });
+    }
+
     console.log(`Notification ${notification.id} (${notification.type}) processed.`);
   },
   { connection },
