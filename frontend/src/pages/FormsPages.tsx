@@ -14,7 +14,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button, Field, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../contexts/AuthContext";
-import { apiFetch } from "../lib/api";
+import { apiFetch, apiUpload } from "../lib/api";
 import { getSupabaseClient } from "../lib/supabase";
 
 type Pagination = {
@@ -61,16 +61,14 @@ function PaginationControls({
 
 export function Forms() {
   const { currentUser } = useAuth();
-  if (currentUser?.role === "USER") return <UserForms />;
+  return currentUser?.role === "USER" ? <UserForms /> : <AdminForms />;
+}
 
+function AdminForms() {
   const [forms, setForms] = useState<any[]>([]);
   const [section, setSection] = useState<"DRAFT" | "PUBLISHED" | "ARCHIVED">(
     "DRAFT",
   );
-
-  useEffect(() => {
-    loadForms();
-  }, []);
 
   async function loadForms() {
     try {
@@ -80,6 +78,10 @@ export function Forms() {
       setForms([]);
     }
   }
+
+  useEffect(() => {
+    loadForms();
+  }, []);
 
   const visibleForms = forms.filter((form) =>
     section === "DRAFT"
@@ -371,6 +373,8 @@ export function FormEditor() {
     },
   ]);
   const [saving, setSaving] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [generatingAi, setGeneratingAi] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -430,6 +434,42 @@ export function FormEditor() {
         fieldIndex === index ? { ...field, ...changes } : field,
       ),
     );
+  }
+
+  async function generateFormWithAi() {
+    if (!aiPrompt.trim()) {
+      setError("Describe the form you want AI to create or modify.");
+      return;
+    }
+    setGeneratingAi(true);
+    setError("");
+    try {
+      const response = await apiFetch<{
+        suggestion: {
+          name: string;
+          description: string;
+          fields: typeof fields;
+        };
+      }>("/api/ai/forms/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: aiPrompt,
+          ...(id ? { formId: id } : {}),
+          currentForm: { name, description, workflowId, fields },
+        }),
+      });
+      setName(response.suggestion.name);
+      setDescription(response.suggestion.description);
+      setFields(response.suggestion.fields);
+    } catch (aiError) {
+      setError(
+        aiError instanceof Error
+          ? aiError.message
+          : "Unable to generate a form suggestion.",
+      );
+    } finally {
+      setGeneratingAi(false);
+    }
   }
 
   async function saveDraft() {
@@ -550,6 +590,29 @@ export function FormEditor() {
               rows={3}
             />
           </Field>
+          {!readOnly && (
+            <div className="ai-assist">
+              <Field label="AI form assistant">
+                <textarea
+                  rows={3}
+                  value={aiPrompt}
+                  onChange={(event) => setAiPrompt(event.target.value)}
+                  placeholder="Describe the form and fields you need..."
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                onClick={generateFormWithAi}
+                disabled={generatingAi}
+              >
+                {generatingAi ? "Generating..." : "Generate with AI"}
+              </Button>
+              <small>
+                Review the suggestion below. It is not saved until you choose
+                Save Draft or Publish Form.
+              </small>
+            </div>
+          )}
           {error && <div className="error-banner">{error}</div>}
         </section>
         <section className="panel editor-panel">
@@ -676,6 +739,8 @@ export function FillForm() {
     }>
   >([]);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
+  const [aiDocuments, setAiDocuments] = useState<File[]>([]);
+  const [fillingWithAi, setFillingWithAi] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -769,6 +834,44 @@ export function FillForm() {
     }
   }
 
+  async function fillFromDocuments() {
+    if (!id || aiDocuments.length === 0) {
+      setError("Choose one to three documents for AI extraction.");
+      return;
+    }
+    setFillingWithAi(true);
+    setError("");
+    try {
+      const payload = new FormData();
+      for (const document of aiDocuments) payload.append("documents", document);
+      const response = await apiUpload<{
+        values: Array<{ fieldId: string; value: string | number | boolean }>;
+      }>(`/api/user/forms/${id}/ai-fill`, payload);
+      const labelById = new Map<string, string>(
+        form.fields.map((field: { id?: string; label: string }) => [
+          field.id ?? field.label,
+          field.label,
+        ]),
+      );
+      setValues((current) => {
+        const updated = { ...current };
+        for (const extracted of response.values) {
+          const label = labelById.get(extracted.fieldId);
+          if (label) updated[label] = String(extracted.value);
+        }
+        return updated;
+      });
+    } catch (aiError) {
+      setError(
+        aiError instanceof Error
+          ? aiError.message
+          : "Unable to extract values from those documents.",
+      );
+    } finally {
+      setFillingWithAi(false);
+    }
+  }
+
   if (!form) {
     return (
       <PageHeader
@@ -800,6 +903,35 @@ export function FillForm() {
               <h2>Request information</h2>
               <p>Complete the fields below before submitting.</p>
             </div>
+          </div>
+          <div className="ai-assist">
+            <Field label="Documents for AI-assisted filling (up to 3)">
+              <input
+                type="file"
+                multiple
+                accept="application/pdf,image/jpeg,image/png,image/webp,text/plain,text/csv,.pdf,.jpg,.jpeg,.png,.webp,.txt,.csv"
+                onChange={(event) => {
+                  const selected = Array.from(event.target.files ?? []);
+                  setAiDocuments(selected.slice(0, 3));
+                  if (selected.length > 3)
+                    setError("Choose no more than three documents.");
+                }}
+              />
+              <small>
+                {aiDocuments.map((document) => document.name).join(", ") ||
+                  "Supported: PDF, JPEG, PNG, WebP, CSV, and plain text; max 8 MB each and 20 MB total."}
+              </small>
+            </Field>
+            <Button
+              variant="secondary"
+              onClick={fillFromDocuments}
+              disabled={fillingWithAi || aiDocuments.length === 0}
+            >
+              {fillingWithAi ? "Extracting..." : "Fill with AI"}
+            </Button>
+            <small>
+              AI only prefills fields. Review and edit values before submitting.
+            </small>
           </div>
           {form.fields.map(
             (

@@ -5,9 +5,13 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
+import multer from "multer";
 import { Prisma, PrismaClient, type User, type UserRole, type UserStatus } from "@prisma/client";
 import { enqueueNotification } from "./notificationQueue";
 import { getOwnedUploadPrefix, getStorageClient, MAX_UPLOAD_SIZE_BYTES, STORAGE_BUCKET } from "./storage";
+import { generateFormDraft, supportedFormFieldTypes, type SupportedFormFieldType } from "./ai/formGeneration";
+import { extractFormValues } from "./ai/documentExtraction";
+import { generateWorkflowSuggestion } from "./ai/workflowGeneration";
 
 export type AuthUser = {
   userId: string;
@@ -97,6 +101,42 @@ app.use(
 );
 app.use(express.json());
 app.use(cookieParser());
+
+const aiDocumentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 3, fileSize: 8 * 1024 * 1024 },
+});
+
+function parseAiDocumentUpload(req: Request, res: Response, next: NextFunction) {
+  aiDocumentUpload.array("documents", 3)(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof multer.MulterError) {
+      const message = error.code === "LIMIT_FILE_SIZE"
+        ? "Each AI document must be 8 MB or smaller."
+        : "Select no more than three AI documents.";
+      return res.status(400).json({ message });
+    }
+    return res.status(400).json({ message: "Unable to receive AI documents." });
+  });
+}
+
+function detectAiDocumentMime(file: Express.Multer.File): string | null {
+  const bytes = file.buffer;
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  if (bytes.includes(0)) return null;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const extension = file.originalname.toLowerCase().split(".").pop();
+    if (extension === "csv" || file.mimetype.toLowerCase() === "text/csv") return "text/csv";
+    if (extension === "txt" || file.mimetype.toLowerCase() === "text/plain") return "text/plain";
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function createToken(user: AuthUser) {
   return jwt.sign(
@@ -416,6 +456,147 @@ function canUserApproveStep(
       return false;
   }
 }
+
+app.post("/api/ai/forms/generate", requireAuth, requireAdmin, async (req, res) => {
+  const prompt = String(req.body?.prompt ?? "").trim();
+  const formId = typeof req.body?.formId === "string" ? req.body.formId.trim() : "";
+  if (!prompt || prompt.length > 12000) {
+    return res.status(400).json({ message: "Provide an AI form prompt of at most 12,000 characters." });
+  }
+
+  try {
+    let current: { name?: string; description?: string; workflowId?: string; fields?: Array<{ id: string; label: string; type: SupportedFormFieldType; required: boolean }> } | undefined;
+    if (formId) {
+      const form = await prisma.form.findFirst({
+        where: { id: formId, companyId: req.user!.companyId },
+        include: { versions: { where: { status: "DRAFT" }, orderBy: { versionNumber: "desc" }, take: 1 } },
+      });
+      if (!form || !form.versions[0]) return res.status(404).json({ message: "Editable form draft not found." });
+      const schemaJson = form.versions[0].schemaJson;
+      const rawFields = schemaJson && typeof schemaJson === "object" && !Array.isArray(schemaJson) && Array.isArray((schemaJson as { fields?: unknown }).fields)
+        ? (schemaJson as { fields: unknown[] }).fields
+        : [];
+      current = {
+        name: form.name,
+        description: form.description ?? "",
+        workflowId: form.versions[0].workflowId,
+        fields: rawFields.flatMap((raw) => {
+          if (!raw || typeof raw !== "object") return [];
+          const field = raw as Record<string, unknown>;
+          if (typeof field.id !== "string" || typeof field.label !== "string" || typeof field.type !== "string" || !supportedFormFieldTypes.includes(field.type as SupportedFormFieldType)) return [];
+          return [{ id: field.id, label: field.label, type: field.type as SupportedFormFieldType, required: field.required === true }];
+        }),
+      };
+    } else if (req.body?.currentForm && typeof req.body.currentForm === "object") {
+      const input = req.body.currentForm as Record<string, unknown>;
+      const rawFields = Array.isArray(input.fields) ? input.fields : [];
+      current = {
+        name: typeof input.name === "string" ? input.name.slice(0, 120) : "",
+        description: typeof input.description === "string" ? input.description.slice(0, 1000) : "",
+        workflowId: typeof input.workflowId === "string" ? input.workflowId : undefined,
+        fields: rawFields.flatMap((raw) => {
+          if (!raw || typeof raw !== "object") return [];
+          const field = raw as Record<string, unknown>;
+          if (typeof field.id !== "string" || typeof field.label !== "string" || typeof field.type !== "string" || !supportedFormFieldTypes.includes(field.type as SupportedFormFieldType)) return [];
+          return [{ id: field.id, label: field.label.slice(0, 100), type: field.type as SupportedFormFieldType, required: field.required === true }];
+        }),
+      };
+    }
+
+    const suggestion = await generateFormDraft(prompt, current);
+    return res.status(200).json({ suggestion });
+  } catch (error) {
+    console.error("AI form generation failed:", error);
+    return res.status(502).json({ message: "Unable to generate a valid form suggestion right now." });
+  }
+});
+
+app.post("/api/ai/workflows/generate", requireAuth, requireAdmin, async (req, res) => {
+  const prompt = String(req.body?.prompt ?? "").trim();
+  if (!prompt || prompt.length > 12000) {
+    return res.status(400).json({ message: "Provide an AI workflow prompt of at most 12,000 characters." });
+  }
+
+  try {
+    const users = await prisma.user.findMany({
+      where: { companyId: req.user!.companyId, status: "ACTIVE" },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, department: true },
+    });
+    const departments = [...new Set(users.map((user) => user.department).filter((department): department is string => Boolean(department)))].sort();
+    const suggestion = await generateWorkflowSuggestion(prompt, {
+      departments,
+      roles: ["ADMIN", "USER"],
+      approverTypes: ["USER", "ROLE", "DEPARTMENT"],
+      users: users.map(({ id, name }) => ({ id, name })),
+    });
+    return res.status(200).json({ suggestion });
+  } catch (error) {
+    console.error("AI workflow generation failed:", error);
+    return res.status(502).json({ message: "Unable to generate a valid workflow suggestion right now." });
+  }
+});
+
+app.post("/api/user/forms/:formId/ai-fill", requireAuth, parseAiDocumentUpload, async (req, res) => {
+  if (req.user!.role !== "USER") {
+    return res.status(403).json({ message: "AI document filling is for regular users." });
+  }
+  const uploadedFiles = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+  if (uploadedFiles.length === 0 || uploadedFiles.length > 3) {
+    return res.status(400).json({ message: "Attach between one and three documents." });
+  }
+  if (uploadedFiles.reduce((sum, file) => sum + file.size, 0) > 20 * 1024 * 1024) {
+    return res.status(400).json({ message: "Combined AI document size must be 20 MB or smaller." });
+  }
+
+  const form = await prisma.form.findFirst({
+    where: {
+      id: String(req.params.formId ?? ""),
+      companyId: req.user!.companyId,
+      status: "PUBLISHED",
+      versions: { some: { status: "ACTIVE" } },
+    },
+    include: {
+      versions: {
+        where: { status: "ACTIVE" },
+        orderBy: { versionNumber: "desc" },
+        take: 1,
+      },
+    },
+  });
+  if (!form?.versions[0]) return res.status(404).json({ message: "Published form not found." });
+
+  const schemaJson = form.versions[0].schemaJson;
+  const rawFields = schemaJson && typeof schemaJson === "object" && !Array.isArray(schemaJson) && Array.isArray((schemaJson as { fields?: unknown }).fields)
+    ? (schemaJson as { fields: unknown[] }).fields
+    : [];
+  const fields = rawFields.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const field = raw as Record<string, unknown>;
+    if (typeof field.id !== "string" || typeof field.label !== "string" || typeof field.type !== "string" || !supportedFormFieldTypes.includes(field.type as typeof supportedFormFieldTypes[number])) return [];
+    return [{ id: field.id, label: field.label, type: field.type, required: field.required === true }];
+  });
+  if (fields.length === 0) return res.status(400).json({ message: "This form has no valid fields for AI extraction." });
+
+  const documents = [];
+  for (const file of uploadedFiles) {
+    const mimeType = detectAiDocumentMime(file);
+    if (!mimeType) return res.status(400).json({ message: `${file.originalname} is not a supported PDF, image, CSV, or text document.` });
+    documents.push({
+      mimeType,
+      bytes: file.buffer,
+      filename: file.originalname.slice(0, 200),
+    });
+  }
+
+  try {
+    const values = await extractFormValues(fields, documents);
+    return res.status(200).json({ values });
+  } catch (error) {
+    console.error("AI document extraction failed:", error);
+    return res.status(502).json({ message: "Unable to extract form values from these documents right now." });
+  }
+});
 
 app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
   const users = await prisma.user.findMany({

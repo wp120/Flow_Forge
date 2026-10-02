@@ -50,6 +50,9 @@ secret key must remain backend-only. Set the bucket's maximum file size to 20 MB
 in Supabase Storage as well; the API independently verifies actual uploaded size
 before accepting an attachment. Signed upload URLs expire after two minutes.
 The worker removes unassociated user uploads older than 24 hours when possible.
+Configure `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`, defaulting to
+`gemini-2.5-flash`) in `backend/.env` to enable AI suggestions and document
+extraction. The Gemini key is server-only and must not use a `VITE_` prefix.
 
 ## Run locally
 

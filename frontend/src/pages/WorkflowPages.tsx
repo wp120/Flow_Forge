@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, Plus, Trash2 } from "lucide-react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { Button, Field, PageHeader, StatusBadge } from "../components/ui";
 import { apiFetch } from "../lib/api";
 
@@ -102,30 +107,54 @@ export function WorkflowEditor() {
   const [name, setName] = useState("New approval workflow");
   const [description, setDescription] = useState("");
   const [steps, setSteps] = useState<WorkflowStepDraft[]>([]);
-  const [options, setOptions] = useState<WorkflowOptions>({ users: [], departments: [], roles: [] });
+  const [options, setOptions] = useState<WorkflowOptions>({
+    users: [],
+    departments: [],
+    roles: [],
+  });
   const [saving, setSaving] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [generatingAi, setGeneratingAi] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     async function loadOptions() {
       try {
-        const data = await apiFetch<WorkflowOptions>("/api/admin/workflow-options");
+        const data = await apiFetch<WorkflowOptions>(
+          "/api/admin/workflow-options",
+        );
         setOptions(data);
 
         const sourceWorkflowId = id ?? blueprintId;
         if (sourceWorkflowId) {
-          const response = await apiFetch<{ workflow: { name: string; description: string | null; steps: WorkflowStepDraft[] } }>(`/api/workflows/${sourceWorkflowId}`);
-          setName(readOnly ? response.workflow.name : `${response.workflow.name} (Copy)`);
+          const response = await apiFetch<{
+            workflow: {
+              name: string;
+              description: string | null;
+              steps: WorkflowStepDraft[];
+            };
+          }>(`/api/workflows/${sourceWorkflowId}`);
+          setName(
+            readOnly
+              ? response.workflow.name
+              : `${response.workflow.name} (Copy)`,
+          );
           setDescription(response.workflow.description ?? "");
-          setSteps(response.workflow.steps.map((step, index) => ({
-            id: `workflow-step-${index}`,
-            name: step.name,
-            approverType: step.approverType,
-            approverValue: step.approverValue,
-          })));
+          setSteps(
+            response.workflow.steps.map((step, index) => ({
+              id: `workflow-step-${index}`,
+              name: step.name,
+              approverType: step.approverType,
+              approverValue: step.approverValue,
+            })),
+          );
         }
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Unable to load approver options.");
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Unable to load approver options.",
+        );
       }
     }
 
@@ -133,13 +162,62 @@ export function WorkflowEditor() {
   }, [id, blueprintId, readOnly]);
 
   function updateStep(index: number, changes: Partial<WorkflowStepDraft>) {
-    setSteps((current) => current.map((step, stepIndex) => stepIndex === index ? { ...step, ...changes } : step));
+    setSteps((current) =>
+      current.map((step, stepIndex) =>
+        stepIndex === index ? { ...step, ...changes } : step,
+      ),
+    );
   }
 
   function valuesFor(type: string) {
-    if (type === "USER") return options.users.map((user) => ({ value: user.id, label: `${user.name} · ${user.email}` }));
-    if (type === "DEPARTMENT") return options.departments.map((department) => ({ value: department, label: department }));
+    if (type === "USER")
+      return options.users.map((user) => ({
+        value: user.id,
+        label: `${user.name} · ${user.email}`,
+      }));
+    if (type === "DEPARTMENT")
+      return options.departments.map((department) => ({
+        value: department,
+        label: department,
+      }));
     return options.roles.map((role) => ({ value: role, label: role }));
+  }
+
+  async function generateWorkflowWithAi() {
+    if (!aiPrompt.trim()) {
+      setError("Describe the approval workflow you need.");
+      return;
+    }
+    setGeneratingAi(true);
+    setError("");
+    try {
+      const response = await apiFetch<{
+        suggestion: {
+          name: string;
+          description: string;
+          steps: Omit<WorkflowStepDraft, "id">[];
+        };
+      }>("/api/ai/workflows/generate", {
+        method: "POST",
+        body: JSON.stringify({ prompt: aiPrompt }),
+      });
+      setName(response.suggestion.name);
+      setDescription(response.suggestion.description);
+      setSteps(
+        response.suggestion.steps.map((step, index) => ({
+          ...step,
+          id: `ai-step-${Date.now()}-${index}`,
+        })),
+      );
+    } catch (aiError) {
+      setError(
+        aiError instanceof Error
+          ? aiError.message
+          : "Unable to generate a workflow suggestion.",
+      );
+    } finally {
+      setGeneratingAi(false);
+    }
   }
 
   async function saveWorkflow() {
@@ -147,13 +225,20 @@ export function WorkflowEditor() {
     setError("");
 
     try {
-      const result = await apiFetch<{ workflow: { id: string } }>("/api/workflows", {
-        method: "POST",
-        body: JSON.stringify({ name, description, steps }),
-      });
+      const result = await apiFetch<{ workflow: { id: string } }>(
+        "/api/workflows",
+        {
+          method: "POST",
+          body: JSON.stringify({ name, description, steps }),
+        },
+      );
       navigate(`/workflows/${result.workflow.id}`);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Unable to save workflow.");
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save workflow.",
+      );
     } finally {
       setSaving(false);
     }
@@ -164,12 +249,20 @@ export function WorkflowEditor() {
       <PageHeader
         eyebrow="WORKFLOW BUILDER"
         title={readOnly ? "View workflow" : "Create workflow"}
-        description={readOnly ? "Review this workflow and its approval steps." : "Set the people and sequence that decide a request."}
+        description={
+          readOnly
+            ? "Review this workflow and its approval steps."
+            : "Set the people and sequence that decide a request."
+        }
         action={
           readOnly ? (
-            <Button onClick={() => navigate(`/workflows/new?blueprint=${id}`)}>Use as blueprint</Button>
+            <Button onClick={() => navigate(`/workflows/new?blueprint=${id}`)}>
+              Use as blueprint
+            </Button>
           ) : (
-            <Button onClick={saveWorkflow} disabled={saving}>{saving ? "Saving..." : "Save workflow"}</Button>
+            <Button onClick={saveWorkflow} disabled={saving}>
+              {saving ? "Saving..." : "Save workflow"}
+            </Button>
           )
         }
       />
@@ -181,8 +274,35 @@ export function WorkflowEditor() {
               <p>Describe what this workflow is for.</p>
             </div>
           </div>
+          {!readOnly && (
+            <div className="ai-assist">
+              <Field label="AI workflow assistant">
+                <textarea
+                  rows={3}
+                  value={aiPrompt}
+                  onChange={(event) => setAiPrompt(event.target.value)}
+                  placeholder="Describe reviewers and approval sequence..."
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                onClick={generateWorkflowWithAi}
+                disabled={generatingAi}
+              >
+                {generatingAi ? "Generating..." : "Generate with AI"}
+              </Button>
+              <small>
+                Review and edit the suggested steps before saving. Existing
+                workflows cannot be changed.
+              </small>
+            </div>
+          )}
           <Field label="Workflow name">
-            <input value={name} onChange={(event) => setName(event.target.value)} disabled={readOnly} />
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={readOnly}
+            />
           </Field>
           <Field label="Description">
             <textarea
@@ -200,13 +320,25 @@ export function WorkflowEditor() {
               <h2>Approval steps</h2>
               <p>Requests move through these steps in order.</p>
             </div>
-            {!readOnly && <Button
-              variant="secondary"
-              icon={Plus}
-              onClick={() => setSteps([...steps, { id: `workflow-step-${Date.now()}`, name: "", approverType: "ROLE", approverValue: options.roles[0] ?? "" }])}
-            >
-              Add step
-            </Button>}
+            {!readOnly && (
+              <Button
+                variant="secondary"
+                icon={Plus}
+                onClick={() =>
+                  setSteps([
+                    ...steps,
+                    {
+                      id: `workflow-step-${Date.now()}`,
+                      name: "",
+                      approverType: "ROLE",
+                      approverValue: options.roles[0] ?? "",
+                    },
+                  ])
+                }
+              >
+                Add step
+              </Button>
+            )}
           </div>
           <div className="step-list">
             {steps.map((step, index) => (
@@ -217,7 +349,9 @@ export function WorkflowEditor() {
                   <span className="eyebrow">STEP {index + 1}</span>
                   <input
                     value={step.name}
-                    onChange={(event) => updateStep(index, { name: event.target.value })}
+                    onChange={(event) =>
+                      updateStep(index, { name: event.target.value })
+                    }
                     aria-label={`Step ${index + 1} name`}
                     disabled={readOnly}
                   />
@@ -225,7 +359,10 @@ export function WorkflowEditor() {
                     value={step.approverType}
                     onChange={(event) => {
                       const nextType = event.target.value;
-                      updateStep(index, { approverType: nextType, approverValue: valuesFor(nextType)[0]?.value ?? "" });
+                      updateStep(index, {
+                        approverType: nextType,
+                        approverValue: valuesFor(nextType)[0]?.value ?? "",
+                      });
                     }}
                     disabled={readOnly}
                   >
@@ -235,20 +372,39 @@ export function WorkflowEditor() {
                   </select>
                   <select
                     value={step.approverValue}
-                    onChange={(event) => updateStep(index, { approverValue: event.target.value })}
+                    onChange={(event) =>
+                      updateStep(index, { approverValue: event.target.value })
+                    }
                     disabled={readOnly}
                   >
                     {valuesFor(step.approverType).map((option) => (
-                      <option value={option.value} key={option.value}>{option.label}</option>
+                      <option value={option.value} key={option.value}>
+                        {option.label}
+                      </option>
                     ))}
                   </select>
                 </div>
-                {!readOnly && <button className="icon-button" type="button" aria-label={`Remove step ${index + 1}`} onClick={() => setSteps((current) => current.filter((_, stepIndex) => stepIndex !== index))}>
-                  <Trash2 size={16} />
-                </button>}
+                {!readOnly && (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Remove step ${index + 1}`}
+                    onClick={() =>
+                      setSteps((current) =>
+                        current.filter((_, stepIndex) => stepIndex !== index),
+                      )
+                    }
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             ))}
-            {steps.length === 0 && <p className="empty-state">No approval steps yet. Add a step to define the approval route.</p>}
+            {steps.length === 0 && (
+              <p className="empty-state">
+                No approval steps yet. Add a step to define the approval route.
+              </p>
+            )}
           </div>
         </section>
       </div>
